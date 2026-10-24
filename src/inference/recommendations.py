@@ -218,9 +218,19 @@ class RecommendationEngine:
         }
 
         # 3. Empaquetar ofertas alineadas con tablas de Banco Guayaquil
+        protocolo_alivio = {
+            "alerta_activa": bool(not se_puede_endeudar or semaforo == "ROJO"),
+            "canales_contacto": {
+                "telefono": "04 3730100 (opción 3 - Soluciones de Pago)",
+                "whatsapp": "+593 98 373 0100",
+            },
+            "recomendacion": "NO adquirir nueva deuda. Contactar a un asesor de renegociación lo más pronto posible.",
+        }
+
         return {
             "1_oferta_maestro_creditos": oferta_credito,
             "2_oferta_maestro_polizas": patrimonio["oferta_poliza_optima"],
             "3_oferta_maestro_metas": patrimonio["oferta_meta_optima"],
             "asesoria_patrimonial_inteligente": patrimonio,
+            "protocolo_alivio_financiero": protocolo_alivio,
         }

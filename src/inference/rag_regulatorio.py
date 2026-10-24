@@ -127,6 +127,20 @@ class RAGRegulatorioEcuador:
             ),
             "keywords": ["poliza", "inversion", "plazo fijo", "cosede", "seguro de depositos", "garantia", "ahorro"],
         },
+        {
+            "id": "SB_REESTRUCTURACION_Y_ALIVIO",
+            "cuerpo": "Superintendencia de Bancos del Ecuador",
+            "norma": "Codificación de Resoluciones SB, Libro I, Título IX, Cap. VI (Mecanismos de Reestructuración y Alivio Financiero)",
+            "tema": "REESTRUCTURACION_Y_ALIVIO_FINANCIERO",
+            "entidad": "Superintendencia de Bancos",
+            "principio": "Derecho a la Reestructuración de Deuda y Acuerdos de Pago Extrajudiciales",
+            "resumen": (
+                "Faculta a los deudores del sistema financiero que presenten dificultades severas de pago o sobreendeudamiento "
+                "para solicitar ante su entidad bancaria la reestructuración, novación o refinanciamiento de sus obligaciones "
+                "mediante ampliación de plazo, consolidación de cuotas o gracia de capital, permitiendo proteger su patrimonio sin caer en coactiva."
+            ),
+            "keywords": ["reestructurar", "reestructuracion", "renegociar", "refinanciar", "alivio", "sobreendeudado", "no puedo mas", "limite"],
+        },
     ]
 
     @classmethod
@@ -138,6 +152,7 @@ class RAGRegulatorioEcuador:
         cuota_solicitada: float,
         capacidad_max_cuota: float,
         intencion: str = "ENDEUDAMIENTO",
+        es_sobreendeudado_critico: bool = False,
     ) -> Dict[str, Any]:
         """
         Recupera los fundamentos juridicos ecuatorianos pertinentes al veredicto financiero.
@@ -162,7 +177,13 @@ class RAGRegulatorioEcuador:
             if item_a1:
                 items_encontrados.append(item_a1)
 
-        # 4. Regla legal para Inversiones en Pólizas (COSEDE)
+        # 4. Regla legal para Reestructuración y Alivio Financiero (Super de Bancos)
+        if es_sobreendeudado_critico or intencion == "REESTRUCTURACION_DEUDA":
+            item_alivio = cls._obtener_por_id("SB_REESTRUCTURACION_Y_ALIVIO")
+            if item_alivio:
+                items_encontrados.insert(0, item_alivio)
+
+        # 5. Regla legal para Inversiones en Pólizas (COSEDE)
         if intencion == "INVERSION" or semaforo == "VERDE":
             item_cosede = cls._obtener_por_id("COSEDE_SEGURO_DEPOSITOS")
             if item_cosede:
@@ -174,7 +195,12 @@ class RAGRegulatorioEcuador:
             items_encontrados.append(item_lopdp)
 
         # Construir frase sintética de respaldo legal
-        if semaforo == "ROJO":
+        if es_sobreendeudado_critico or intencion == "REESTRUCTURACION_DEUDA":
+            sintesis = (
+                "Al amparo de la Codificación de Resoluciones de la Superintendencia de Bancos (Capítulo VI, Mecanismos de Reestructuración) "
+                "y las normas de Crédito Responsable de la JPRF, se activa el protocolo para negociar un acuerdo de alivio financiero y refinanciamiento extrajudicial."
+            )
+        elif semaforo == "ROJO":
             sintesis = (
                 "De conformidad con la Norma de Gestión Crediticia de la JPRF (Resolución JPRF-F-2023-080) "
                 "y la regulación de activos de riesgo de la Superintendencia de Bancos, esta recomendación busca "

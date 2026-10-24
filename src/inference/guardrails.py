@@ -59,6 +59,9 @@ class GuardrailsEngine:
         "dinero", "dolares", "dólares", "sueldo", "ingreso", "gasto", "deuda", "equifax",
         "buro", "buró", "score", "alcanza", "comprar", "pagar", "financiar", "financiamiento",
         "moto", "auto", "carro", "casa", "terreno", "tv", "laptop", "computadora", "viaje",
+        "sobreendeudado", "sobreendeudamiento", "endeudado", "reestructurar", "reestructuracion", "reestructuración",
+        "renegociar", "renegociacion", "renegociación", "refinanciar", "refinanciamiento", "alivio", "moroso", "mora",
+        "limite", "límite", "deudas", "cuello",
     }
 
     # Palabras clave de casos sensibles que requieren soporte humano urgente

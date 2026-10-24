@@ -76,7 +76,7 @@ TASA_ANUAL_PREFERENCIAL_BG = 14.20
 # 1. ESQUEMAS DE VALIDACION ESTRICTA (DTOs Pydantic)
 # ============================================================================
 class NLUResultDTO(BaseModel):
-    intencion: Literal["ENDEUDAMIENTO", "INVERSION", "AHORRO", "CONSULTA_GENERAL"] = Field(
+    intencion: Literal["ENDEUDAMIENTO", "INVERSION", "AHORRO", "REESTRUCTURACION_DEUDA", "CONSULTA_GENERAL"] = Field(
         default="ENDEUDAMIENTO",
         description="Intencion principal detectada en el mensaje del cliente.",
     )
@@ -84,6 +84,7 @@ class NLUResultDTO(BaseModel):
     plazo_meses: int = Field(default=12, ge=1, le=120)
     cuota_mensual_nueva: float = Field(default=0.0, ge=0.0)
     producto_mencionado: str = Field(default="CREDITO_CONSUMO")
+    en_estres_financiero: bool = Field(default=False, description="True si expresa angustia, sobreendeudamiento o imposibilidad de pago.")
     origen_nlu: str = Field(default="AZURE_AI_FOUNDRY_GPT4O_MINI")
 
 
@@ -296,12 +297,14 @@ class MotorIAFoundry:
         """
         system_prompt_nlu = (
             "Eres un extractor NLU bancario oficial de Banco Guayaquil. Devuelve SOLO un JSON valido con las claves exactas: "
-            '{"intencion": "ENDEUDAMIENTO"|"INVERSION"|"AHORRO"|"CONSULTA_GENERAL", '
+            '{"intencion": "ENDEUDAMIENTO"|"INVERSION"|"AHORRO"|"REESTRUCTURACION_DEUDA"|"CONSULTA_GENERAL", '
             '"monto_solicitado": float, "plazo_meses": int, "cuota_mensual_nueva": float, '
-            '"producto_mencionado": str}. '
-            "Si no menciona plazo usa 12. Si menciona cuota mensual ponla en cuota_mensual_nueva y monto_solicitado=0. "
-            "Si menciona monto total ponlo en monto_solicitado y cuota_mensual_nueva=0. "
-            "Si pregunta que hacer con su dinero, como rentabilizar o invertir sus ahorros, usa intencion 'INVERSION' o 'AHORRO'."
+            '"producto_mencionado": str, "en_estres_financiero": bool}. '
+            "Reglas de intencion: "
+            "- Si el usuario menciona estar sobreendeudado, que ya no puede mas, que no le alcanza para pagar, o pide auxilio/renegociar/alivio/refinanciar, usa intencion 'REESTRUCTURACION_DEUDA' y en_estres_financiero=true. "
+            "- Si pregunta que hacer con su dinero, rentabilizar ahorros o donde guardar/invertir, usa intencion 'INVERSION' o 'AHORRO'. "
+            "- Si no menciona plazo usa 12. Si menciona cuota mensual ponla en cuota_mensual_nueva y monto_solicitado=0. "
+            "- Si menciona monto total ponlo en monto_solicitado y cuota_mensual_nueva=0."
         )
 
         azure_json = self.foundry_client.call_chat_json(
@@ -313,12 +316,13 @@ class MotorIAFoundry:
 
         if azure_json is not None:
             intencion = str(azure_json.get("intencion", "ENDEUDAMIENTO")).upper()
-            if intencion not in {"ENDEUDAMIENTO", "INVERSION", "AHORRO", "CONSULTA_GENERAL"}:
+            if intencion not in {"ENDEUDAMIENTO", "INVERSION", "AHORRO", "REESTRUCTURACION_DEUDA", "CONSULTA_GENERAL"}:
                 intencion = "ENDEUDAMIENTO"
             monto = float(azure_json.get("monto_solicitado", 0.0) or 0.0)
             plazo = int(azure_json.get("plazo_meses", 12) or 12)
             cuota = float(azure_json.get("cuota_mensual_nueva", 0.0) or 0.0)
             producto = str(azure_json.get("producto_mencionado", "CREDITO_CONSUMO"))
+            en_estres = bool(azure_json.get("en_estres_financiero", False))
             origen = "AZURE_AI_FOUNDRY_GPT4O_MINI"
         else:
             parsed = self._fallback_local_nlu(peticion_usuario)
@@ -327,6 +331,7 @@ class MotorIAFoundry:
             plazo = parsed["plazo_meses"]
             cuota = parsed["cuota_mensual_nueva"]
             producto = parsed["producto_mencionado"]
+            en_estres = parsed.get("en_estres_financiero", False)
             origen = "FALLBACK_LOCAL_DETERMINISTA"
 
         # Regla financiera del Subpaso A:
@@ -337,7 +342,7 @@ class MotorIAFoundry:
             elif cuota > 0 and monto <= 0:
                 monto = calcular_monto_desde_cuota(cuota, plazo, tasa_anual_pct=TASA_ANUAL_REFERENCIAL_NLU)
         else:
-            # Si es INVERSION o AHORRO, no es una nueva deuda crediticia
+            # Si es INVERSION, AHORRO o REESTRUCTURACION_DEUDA, no es una nueva deuda crediticia
             cuota = 0.0
 
         return NLUResultDTO(
@@ -346,6 +351,7 @@ class MotorIAFoundry:
             plazo_meses=plazo,
             cuota_mensual_nueva=round(cuota, 2),
             producto_mencionado=producto,
+            en_estres_financiero=en_estres,
             origen_nlu=origen,
         )
 
@@ -354,11 +360,22 @@ class MotorIAFoundry:
         """Extractor NLU local de respaldo basado en expresiones regulares financieras."""
         t_low = texto.lower()
 
-        # 1. Detectar intencion
-        if any(w in t_low for w in ["invertir", "inversion", "inversión", "poliza", "póliza", "plazo fijo", "rendimiento", "hacer con mi dinero", "hacer mi dinero", "hago con mi dinero", "poner mi dinero", "hacer crecer", "rentabilizar", "donde guardo mi dinero", "donde pongo mi plata"]):
+        # 1. Detectar intencion y senales de estres o sobreendeudamiento
+        en_estres = False
+        if any(w in t_low for w in [
+            "sobreendeudado", "sobre endeudado", "no puedo mas", "no puedo más", "hasta el cuello",
+            "al limite", "al límite", "ahogado en deudas", "no logro pagar", "no me alcanza para pagar",
+            "no puedo pagar", "ya no aguanto", "renegociar", "reestructurar", "refinanciar", "alivio financiero"
+        ]):
+            intencion = "REESTRUCTURACION_DEUDA"
+            en_estres = True
+            producto = "SOLUCION_PAGO_REESTRUCTURACION"
+        elif any(w in t_low for w in ["invertir", "inversion", "inversión", "poliza", "póliza", "plazo fijo", "rendimiento", "hacer con mi dinero", "hacer mi dinero", "hago con mi dinero", "poner mi dinero", "hacer crecer", "rentabilizar", "donde guardo mi dinero", "donde pongo mi plata"]):
             intencion = "INVERSION"
+            producto = "POLIZA_INVERSION"
         elif any(w in t_low for w in ["meta", "ahorrar", "ahorro programado", "guardar dinero", "ahorro flexible"]):
             intencion = "AHORRO"
+            producto = "META_AHORRO"
         elif any(
             w in t_low
             for w in [
@@ -379,8 +396,10 @@ class MotorIAFoundry:
             ]
         ):
             intencion = "ENDEUDAMIENTO"
+            producto = "CREDITO_CONSUMO"
         else:
             intencion = "CONSULTA_GENERAL"
+            producto = "CONSULTA"
 
         # 2. Detectar plazo en meses o años
         plazo_meses = 12
@@ -418,13 +437,15 @@ class MotorIAFoundry:
             else:
                 monto_solicitado = primer_valor
 
-        producto = "POLIZA_INVERSION" if intencion == "INVERSION" else ("META_AHORRO" if intencion == "AHORRO" else "CREDITO_CONSUMO")
+        if not locals().get("producto"):
+            producto = "POLIZA_INVERSION" if intencion == "INVERSION" else ("META_AHORRO" if intencion == "AHORRO" else ("SOLUCION_PAGO_REESTRUCTURACION" if intencion == "REESTRUCTURACION_DEUDA" else "CREDITO_CONSUMO"))
         return {
             "intencion": intencion,
             "monto_solicitado": monto_solicitado,
             "plazo_meses": plazo_meses,
             "cuota_mensual_nueva": cuota_mensual_nueva,
             "producto_mencionado": producto,
+            "en_estres_financiero": en_estres,
         }
 
     # ------------------------------------------------------------------------
@@ -532,7 +553,7 @@ class MotorIAFoundry:
         return pd.DataFrame([row])[self.FEATURE_COLS]
 
     def subpaso_b_inferencia_ml_y_semaforo(
-        self, datos_cliente: Dict[str, Any], nlu: NLUResultDTO
+        self, datos_cliente: Dict[str, Any], nlu: NLUResultDTO, peticion_usuario: str = ""
     ) -> Dict[str, Any]:
         """
         1. Extrae las features actuales del cliente.
@@ -601,7 +622,33 @@ class MotorIAFoundry:
         score_eq = int(f_base["SCORE_EQUIFAX"])
         uso_capacidad_pct = (cuota_nueva / capacidad_maxima_cuota * 100.0) if capacidad_maxima_cuota > 0 else (100.0 if cuota_nueva > 0 else 0.0)
 
-        if (
+        # Deteccion de Sobreendeudamiento Critico / Angustia Financiera
+        palabras_estres_texto = any(
+            w in peticion_usuario.lower()
+            for w in [
+                "no puedo mas", "no puedo más", "sobreendeudado", "sobre endeudado",
+                "hasta el cuello", "al limite", "al límite", "ahogado en deudas",
+                "no puedo pagar", "no me alcanza para pagar", "ya no aguanto",
+                "renegociar", "reestructurar", "refinanciar", "alivio financiero"
+            ]
+        ) if peticion_usuario else False
+
+        es_sobreendeudado_critico = bool(
+            nlu.intencion == "REESTRUCTURACION_DEUDA"
+            or getattr(nlu, "en_estres_financiero", False)
+            or palabras_estres_texto
+            or cap_vencido > 0
+            or flujo_neto_actual <= 0
+            or dti_actual_pct >= 50.0
+            or (cuota_nueva > 0 and flujo_neto_post_cuota < -25.0)
+            or (probabilidad_mora >= 0.45 and cuota_nueva > capacidad_maxima_cuota * 1.4)
+        )
+
+        if es_sobreendeudado_critico:
+            semaforo = "ROJO"
+            se_puede_endeudar = False
+            estado_resolucion = "ALERTA_CRITICA_RENEGOCIACION_ASESOR"
+        elif (
             cap_vencido > 0
             or probabilidad_mora >= 0.35
             or (nlu.intencion == "ENDEUDAMIENTO" and (cuota_nueva > capacidad_maxima_cuota or flujo_neto_post_cuota < 50.0))
@@ -660,6 +707,11 @@ class MotorIAFoundry:
 
         # Factores explicativos deterministas del modelo
         factores_clave: List[str] = []
+        if es_sobreendeudado_critico:
+            factores_clave.append(
+                f"ALERTA CRÍTICA: Finanzas al límite (flujo libre ${flujo_neto_actual:,.2f}/mes, DTI {dti_actual_pct:.0f}%). "
+                "Se prohíbe nueva deuda y se activa protocolo urgente de negociación con asesor."
+            )
         if cap_vencido == 0:
             factores_clave.append("Historial al dia en MAESTRO_CREDITOS (VENCIDO = $0.00).")
         else:
@@ -820,6 +872,28 @@ class MotorIAFoundry:
                     "valor_para_banco_guayaquil": valor_banco,
                 },
             },
+            "protocolo_alivio_financiero": {
+                "alerta_activa": bool(es_sobreendeudado_critico),
+                "nivel_urgencia": "CRITICO_INMEDIATO" if es_sobreendeudado_critico else "NO_REQUERIDO",
+                "diagnostico_capacidad": (
+                    f"Capacidad de pago al límite: flujo libre de ${flujo_neto_actual:,.2f}/mes y carga DTI de {dti_actual_pct:.1f}%."
+                    f"{' Registra capital vencido de $' + f'{cap_vencido:,.2f}.' if cap_vencido > 0 else ''}"
+                    if es_sobreendeudado_critico
+                    else "Situación financiera dentro de parámetros manejables."
+                ),
+                "dictamen_deuda": "RECOMENDACION_NO_ENDEUDARSE" if es_sobreendeudado_critico else "APTO_SEGUN_PARAMETROS",
+                "soluciones_reestructuracion_bg": [
+                    "Ampliación de plazo de créditos vigentes para reducir cuota mensual hasta en un 40%",
+                    "Consolidación de deudas de tarjetas y créditos en una sola cuota con tasa preferencial",
+                    "Período de gracia o alivio temporal de capital para recuperar holgura de liquidez",
+                ],
+                "canales_contacto_urgente": {
+                    "telefono_soluciones_pago": "04 3730100 (opción 3 - Acuerdos de Pago)",
+                    "linea_nacional_gratuita": "1800 3730100",
+                    "whatsapp_oficial": "+593 98 373 0100",
+                    "horario_atencion": "Lunes a Viernes 08:30 a 18:00 / Agencias a nivel nacional",
+                },
+            },
         }
 
         return {
@@ -870,6 +944,10 @@ class MotorIAFoundry:
                 "tiene_deuda_cara_tc": tiene_deuda_cara_tc,
                 "cuota_diferidos_tc": cuota_tc_diferidos,
                 "estrategia_asesoria": estrategia_asesoria,
+                "es_sobreendeudado_critico": es_sobreendeudado_critico,
+                "solicita_renegociacion": bool(nlu.intencion == "REESTRUCTURACION_DEUDA" or palabras_estres_texto),
+                "canal_asesor": "04 3730100 (opcion 3) o WhatsApp +593 98 373 0100",
+                "dti_actual_pct": dti_actual_pct,
             },
         }
 
@@ -893,25 +971,25 @@ class MotorIAFoundry:
             "Recibes metricas exactas de nuestro modelo ML de riesgo y perfil patrimonial. "
             "Responde SOLO un JSON con dos claves: "
             '{"titulo_pantalla": str, "explicacion_ia": str}. '
-            "Reglas de tono y negocio: "
-            "1. Si la intencion es INVERSION o AHORRO (o el usuario pregunta que hacer con su dinero, como rentabilizar o donde guardar): "
-            "   Aplica la asesoria patrimonial segun 'tier_patrimonial': "
-            "   - TIER_ALTO_PATRIMONIAL ($3,000+): Felicitalo por su solvencia y recomiendale abrir una Poliza a Plazo Fijo en MAESTRO_POLIZAS "
-            "     por el monto sugerido ($X) al 7.25% anual a 180 dias con respaldo COSEDE hasta $32,000, dejando su colchon operativo ($Y) en cuenta de ahorros. "
-            "   - TIER_MEDIO_FLEXIBLE ($500 - $3,000): Proponle una estrategia hibrida: rentabilizar una parte en Poliza a corto plazo (90 dias al 6.50%) "
-            "     y activar Ahorro Programado flexible en MAESTRO_METAS ($X/mes) para no comprometer su liquidez diaria. "
-            "   - TIER_BASICO_CRECIMIENTO (< $500): Recomiendale activar Ahorro Flexible en MAESTRO_METAS por $X/mes para armar su fondo de emergencia de 3 meses. "
-            "   - Si 'tiene_deuda_cara_tc' es true: Recomiendale primero liquidar o amortizar su saldo diferido de tarjeta (~16% anual) "
-            "     porque ahorrarse ese interes da un rendimiento neto superior a cualquier inversion conservadora. "
-            "   - Muestra el valor mutuo: rentabilidad y seguridad garantizada para el cliente, captacion y solidez para Banco Guayaquil. "
-            "2. Si la intencion es ENDEUDAMIENTO: "
-            "   - Si semaforo es ROJO: inicia diciendo 'Te recomendamos que no hagas eso en este momento porque...' explicando con numeros exactos "
-            "     por que caeria en mora y proponle el plan de ahorro en MAESTRO_METAS o recalcular monto seguro. "
-            "   - Si semaforo es AMARILLO: dile que si le alcanza pero con lo justo, y explicale cuanto recortar en gastos variables o ahorrar de entrada. "
-            "   - Si semaforo es VERDE: felicitalo y confirma que puede tomar el credito con su cuota aprobada y capacidad maxima. "
-            "3. Si 'documento_ocr' esta presente con gastos_ocultos > 0: MENCIONA EXPLICITAMENTE la entidad y cuota detectada en el documento "
-            "   (ej. cuota mensual de $320 en Banco Pichincha) y explica como esa obligacion externa reduce su liquidez o condiciona la decision. "
-            "Maximo 85 palabras en explicacion_ia. Cero emojis. Tono profesional y empatico."
+            "Reglas de tono y negocio estrictas: "
+            "1. ALERTA CRITICA DE SOBREENDEUDAMIENTO (Si 'es_sobreendeudado_critico' es true, o el usuario expresa que no puede mas, "
+            "   esta al limite con sus deudas, pide credito para pagar otras deudas, o su flujo es negativo/deficitario): "
+            "   - Recomiendale de forma enfatica y empatica que NO HAGA ESO (NO tome nueva deuda ni asuma mas compromisos crediticios) "
+            "     porque su capacidad de pago se encuentra ya al limite. "
+            "   - Indicale con urgencia que se CONTACTE LO MAS PRONTO POSIBLE con un asesor especializado de Banco Guayaquil "
+            "     llamando al 04 3730100 (opcion 3 - Soluciones de Pago) o por WhatsApp oficial (+593 98 373 0100) "
+            "     para NEGOCIAR Y REESTRUCTURAR su deuda (ampliar plazos, consolidar cuotas o aplicar a un plan de alivio financiero). "
+            "2. Si la intencion es INVERSION o AHORRO (que hacer con su dinero, rentabilizar o donde guardar): "
+            "   - TIER_ALTO_PATRIMONIAL ($3,000+): Recomiendale abrir Poliza a Plazo Fijo en MAESTRO_POLIZAS al 7.25% anual a 180 dias con respaldo COSEDE ($32,000), dejando colchon operativo. "
+            "   - TIER_MEDIO_FLEXIBLE ($500 - $3,000): Estrategia hibrida: Poliza a 90 dias (6.50%) + Ahorro Programado flexible en MAESTRO_METAS ($X/mes). "
+            "   - TIER_BASICO_CRECIMIENTO (< $500): Ahorro Flexible en MAESTRO_METAS por $X/mes para armar fondo de emergencia. "
+            "   - Si tiene diferidos en TC (~16% anual): Recomiendale amortizarlos primero para ahorrarse ese alto interes. "
+            "3. Si es ENDEUDAMIENTO normal (sin sobreendeudamiento critico): "
+            "   - Si semaforo es ROJO: 'Te recomendamos que no hagas eso en este momento porque...' explicando con numeros exactos y proponiendo ahorro meta. "
+            "   - Si semaforo es AMARILLO: dile que si le alcanza pero con lo justo, sugiriendo recortar consumos variables. "
+            "   - Si semaforo es VERDE: felicitalo y confirma su cuota y plazo aprobados. "
+            "4. Si 'documento_ocr' tiene gastos_ocultos > 0: MENCIONA EXPLICITAMENTE la entidad y cuota detectada. "
+            "Maximo 85 palabras en explicacion_ia. Cero emojis. Tono profesional, protector y empatico."
         )
 
         user_prompt_compacto = json.dumps(
@@ -965,6 +1043,22 @@ class MotorIAFoundry:
         tiene_tc = ctx.get("tiene_deuda_cara_tc", False)
         cuota_tc = ctx.get("cuota_diferidos_tc", 0.0)
         intencion = ctx.get("intencion", "ENDEUDAMIENTO")
+        es_critico = bool(ctx.get("es_sobreendeudado_critico", False))
+        dti = ctx.get("dti_actual_pct", 45.0)
+
+        # --------------------------------------------------------------------
+        # CASO 0: ALERTA CRITICA DE SOBREENDEUDAMIENTO (NO ENDEUDARSE + ASESOR)
+        # --------------------------------------------------------------------
+        if es_critico:
+            titulo = "Alerta Crítica: No tomes más deuda. Contacta a un asesor para negociar."
+            mora_txt = f" y registras ${ctx['capital_vencido']:,.2f} en mora" if ctx.get("capital_vencido", 0) > 0 else ""
+            explicacion = (
+                f"Te recomendamos firmemente que no adquieras nueva deuda en este momento porque estás al límite de tu capacidad "
+                f"financiera (flujo libre de ${flujo:,.2f}/mes y carga de endeudamiento del {dti:.0f}%{mora_txt}). "
+                f"Comunícate lo más pronto posible con un asesor especializado de Banco Guayaquil al 04 3730100 (opción 3) o WhatsApp (+593 98 373 0100) "
+                f"para negociar y reestructurar tu deuda mediante un plan de alivio financiero, consolidación o ampliación de plazos."
+            )
+            return titulo, explicacion
 
         # --------------------------------------------------------------------
         # CASO 1: ASESORIA PATRIMONIAL E INVERSION (Preguntas sobre que hacer con el dinero)
@@ -1052,7 +1146,28 @@ class MotorIAFoundry:
         tasa_poliza = ctx.get("tasa_poliza_sugerida", 6.50)
         colchon = ctx.get("colchon_reserva_sugerido", 300.0)
         tiene_tc = ctx.get("tiene_deuda_cara_tc", False)
+        es_critico = bool(ctx.get("es_sobreendeudado_critico", False))
         acciones: List[Dict[str, str]] = []
+
+        # Acciones prioritarias si esta en sobreendeudamiento critico
+        if es_critico:
+            return [
+                {
+                    "tipo": "CONTACTAR_ASESOR_RENEGOCIACION",
+                    "label": "Llamar Asesor de Renegociación (04 3730100)",
+                    "payload_tabla": "SOLUCIONES_PAGO_BG",
+                },
+                {
+                    "tipo": "WHATSAPP_RENEGOCIACION",
+                    "label": "Negociar Deuda por WhatsApp (+593 98 373 0100)",
+                    "payload_tabla": "WHATSAPP_BG",
+                },
+                {
+                    "tipo": "SOLICITAR_PLAN_ALIVIO",
+                    "label": "Solicitar Plan Alivio y Reestructuración",
+                    "payload_tabla": "SOLUCIONES_CREDITO_BG",
+                },
+            ]
 
         # Acciones prioritarias si la intencion es Inversion o Ahorro
         if intencion in {"INVERSION", "AHORRO"}:
@@ -1207,7 +1322,7 @@ class MotorIAFoundry:
         # --------------------------------------------------------------------
         # SUBPASO B: INFERENCIA ML LIGHTGBM + CAPACIDAD + SEMAFORO
         # --------------------------------------------------------------------
-        res_b = self.subpaso_b_inferencia_ml_y_semaforo(datos_cliente, nlu_dto)
+        res_b = self.subpaso_b_inferencia_ml_y_semaforo(datos_cliente, nlu_dto, peticion_usuario=peticion_usuario)
 
         # --------------------------------------------------------------------
         # RAG REGULATORIO ECUATORIANO (JPRF, Superintendencia de Bancos, COMFyF)
@@ -1217,6 +1332,7 @@ class MotorIAFoundry:
             ctx = res_b["_contexto_compacto_llm"]
             sem = res_b["evaluacion_riesgo_ml"]["semaforo_salud_financiera"]
             prob = res_b["evaluacion_riesgo_ml"]["probabilidad_caer_en_vencido_mora"]
+            es_critico = bool(ctx.get("es_sobreendeudado_critico", False))
             fundamento_legal = RAGRegulatorioEcuador.buscar_fundamentacion_legal(
                 semaforo=sem,
                 probabilidad_mora=prob,
@@ -1224,6 +1340,7 @@ class MotorIAFoundry:
                 cuota_solicitada=float(ctx.get("cuota_nueva", 0.0)),
                 capacidad_max_cuota=float(ctx.get("capacidad_max_cuota", 0.0)),
                 intencion=nlu_dto.intencion,
+                es_sobreendeudado_critico=es_critico,
             )
             res_b["_contexto_compacto_llm"]["fundamento_legal_resumen"] = fundamento_legal["sintesis_legal_usuario"]
         
