@@ -44,13 +44,17 @@ except ImportError:
 try:
     from src.inference.guardrails import GuardrailsEngine
     from src.inference.rag_regulatorio import RAGRegulatorioEcuador
+    from src.inference.document_intelligence_ia import DocumentIntelligenceEngine, DocumentIntelligenceResultDTO
 except ImportError:
     try:
         from guardrails import GuardrailsEngine
         from rag_regulatorio import RAGRegulatorioEcuador
+        from document_intelligence_ia import DocumentIntelligenceEngine, DocumentIntelligenceResultDTO
     except ImportError:
         GuardrailsEngine = None  # type: ignore[assignment,misc]
         RAGRegulatorioEcuador = None  # type: ignore[assignment,misc]
+        DocumentIntelligenceEngine = None  # type: ignore[assignment,misc]
+        DocumentIntelligenceResultDTO = None  # type: ignore[assignment,misc]
 
 
 logging.basicConfig(
@@ -272,6 +276,11 @@ class MotorIAFoundry:
 
         self.model = joblib.load(resolved_path)
         self.foundry_client = AzureFoundryClient()
+        self.doc_engine = (
+            DocumentIntelligenceEngine(openai_client=self.foundry_client.client)
+            if DocumentIntelligenceEngine is not None
+            else None
+        )
         logger.info(f"Modelo ML cargado exitosamente desde: {resolved_path}")
 
     # ------------------------------------------------------------------------
@@ -797,7 +806,9 @@ class MotorIAFoundry:
             "2. Si semaforo es AMARILLO: dile que si le alcanza pero con lo justo, y explicale cuanto recortar en gastos variables "
             "o ahorrar de entrada en MAESTRO_METAS para no asfixiar su liquidez. "
             "3. Si semaforo es VERDE: felicitalo, confirma que puede tomar el credito o invertir en MAESTRO_POLIZAS con sus cifras exactas. "
-            "Maximo 75 palabras en explicacion_ia. Cero emojis."
+            "4. Si 'documento_ocr' esta presente con gastos_ocultos > 0: MENCIONA EXPLÍCITAMENTE la entidad y cuota detectada en el documento "
+            "(ej. cuota mensual de $320 en Banco Pichincha) y explica como esa obligacion externa reduce su liquidez o condiciona la decision. "
+            "Maximo 85 palabras en explicacion_ia. Cero emojis."
         )
 
         user_prompt_compacto = json.dumps(
@@ -845,6 +856,11 @@ class MotorIAFoundry:
         poliza = ctx["monto_poliza_sugerido"]
 
         if sem == "ROJO":
+            doc_info = ctx.get("documento_ocr", {})
+            mencion_doc = ""
+            if doc_info and doc_info.get("gastos_ocultos", 0) > 0:
+                mencion_doc = f"Al analizar tu documento de {doc_info.get('entidad', 'otra entidad')}, detectamos una cuota externa fija de ${doc_info['gastos_ocultos']:,.2f}/mes no registrada en Banco Guayaquil. "
+
             titulo = f"Alerta de Salud Financiera: Evita endeudarte con ${cuota:,.2f}/mes ahora."
             razon_vencido = (
                 f"actualmente registras ${ctx['capital_vencido']:,.2f} de capital vencido y "
@@ -852,7 +868,7 @@ class MotorIAFoundry:
                 else ""
             )
             explicacion = (
-                f"Te recomendamos que no hagas eso en este momento porque {razon_vencido}"
+                f"{mencion_doc}Te recomendamos que no hagas eso en este momento porque {razon_vencido}"
                 f"tu flujo neto disponible es de ${flujo:,.2f}/mes y tu capacidad máxima para una nueva cuota es de "
                 f"${cap:,.2f}/mes. Asumir un pago de ${cuota:,.2f}/mes dejaría tu liquidez en ${flujo_post:,.2f}/mes, "
                 f"elevando tu probabilidad de caer en mora al {ctx['prob_mora']*100:.0f}%. "
@@ -960,6 +976,8 @@ class MotorIAFoundry:
         self,
         peticion_usuario: str,
         datos_cliente: Dict[str, Any],
+        documento_adjunto: Optional[Union[str, Path, bytes, BinaryIO]] = None,
+        nombre_archivo: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Punto de entrada unico para el equipo de Backend:
@@ -971,6 +989,30 @@ class MotorIAFoundry:
             datos_cliente.get("maestro_clientes", {}).get("COD_CLTE", 10045892),
         )
         transaccion_id = datos_cliente.get("transaccion_id", f"req_bg_{random.randint(1000, 9999)}")
+
+        # --------------------------------------------------------------------
+        # PROCESAMIENTO OPCIONAL DE DOCUMENTO ADJUNTO (AZURE DOCUMENT INTELLIGENCE)
+        # --------------------------------------------------------------------
+        doc_result_dto = None
+        if documento_adjunto and self.doc_engine is not None:
+            logger.info("Procesando documento adjunto con Azure Document Intelligence prebuilt-layout...")
+            doc_result_dto = self.doc_engine.analizar_documento(
+                documento_input=documento_adjunto,
+                nombre_archivo=nombre_archivo,
+            )
+            # Inyectar resultados de Document Intelligence en datos_cliente
+            ext = datos_cliente.setdefault("fuentes_externas_ia", {})
+            ocr_dict = ext.setdefault("document_intelligence_ocr", {})
+            ocr_dict["documento_subido"] = True
+            ocr_dict["tipo_documento"] = doc_result_dto.tipo_documento
+            ocr_dict["entidad_emisora"] = doc_result_dto.entidad_emisora
+            ocr_dict["titular_detectado"] = doc_result_dto.titular_detectado
+            ocr_dict["identificacion_detectada"] = doc_result_dto.identificacion_detectada
+            ocr_dict["ingresos_adicionales_detectados"] = doc_result_dto.INGRESOS_EXTRA_OCR
+            ocr_dict["gastos_ocultos_detectados"] = doc_result_dto.GASTOS_OCULTOS_OCR
+            ocr_dict["hallazgos_clave"] = doc_result_dto.hallazgos_clave
+            ocr_dict["detalle_obligaciones_detectadas"] = doc_result_dto.detalle_obligaciones_detectadas
+            ocr_dict["motor_extraccion"] = doc_result_dto.motor_extraccion
 
         # --------------------------------------------------------------------
         # PASO 0: GUARDRAILS DE SEGURIDAD, FILTRO DE DOMINIO Y SALUDOS SIMPLES
@@ -1015,6 +1057,15 @@ class MotorIAFoundry:
                 intencion=nlu_dto.intencion,
             )
             res_b["_contexto_compacto_llm"]["fundamento_legal_resumen"] = fundamento_legal["sintesis_legal_usuario"]
+        
+        if doc_result_dto is not None:
+            res_b["_contexto_compacto_llm"]["documento_ocr"] = {
+                "tipo": doc_result_dto.tipo_documento,
+                "entidad": doc_result_dto.entidad_emisora,
+                "gastos_ocultos": doc_result_dto.GASTOS_OCULTOS_OCR,
+                "ingresos_extra": doc_result_dto.INGRESOS_EXTRA_OCR,
+                "hallazgos": doc_result_dto.hallazgos_clave,
+            }
 
         # --------------------------------------------------------------------
         # SUBPASO C: EXPLICACION XAI CON FOUNDRY (gpt-4o) + MULTILINGÜE
@@ -1039,6 +1090,7 @@ class MotorIAFoundry:
             "evaluacion_riesgo_ml": res_b["evaluacion_riesgo_ml"],
             "dictamen_endeudamiento": res_b["dictamen_endeudamiento"],
             "recomendaciones_productos_bg": res_b["recomendaciones_productos_bg"],
+            "document_intelligence_ocr": doc_result_dto.model_dump() if doc_result_dto else datos_cliente.get("fuentes_externas_ia", {}).get("document_intelligence_ocr", None),
             "fundamentacion_legal_ecuador": fundamento_legal,
             "agente_conversacional_foundry": agente_foundry,
         }

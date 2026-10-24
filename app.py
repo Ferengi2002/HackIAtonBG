@@ -3,17 +3,18 @@ API REST Oficial del Copiloto de Salud Financiera - Banco Guayaquil
 Framework: FastAPI (Documentacion interactiva Swagger / OpenAPI lista para probar en navegador)
 
 Endpoints:
-- POST /api/v1/copiloto/evaluar : Ejecuta Guardrails -> NLU -> LightGBM -> RAG -> XAI Foundry.
-- GET  /healthz                 : Liveness probe para Spring Boot / Kubernetes / ACA.
-- GET  /docs                    : Documentacion interactiva Swagger UI con ejemplos listos para 'Try it out'.
+- POST /api/v1/copiloto/evaluar                : Evaluacion con JSON (con soporte de ruta de documento opcional).
+- POST /api/v1/copiloto/evaluar-con-documento  : Evaluacion con subida de archivo PDF/imagen (multipart/form-data).
+- GET  /healthz                                : Liveness probe para Spring Boot / Kubernetes / ACA.
+- GET  /docs                                   : Documentacion interactiva Swagger UI con ejemplos listos para 'Try it out'.
 """
 
 from contextlib import asynccontextmanager
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict
-from fastapi import Body, FastAPI, HTTPException, status
+from typing import Any, Dict, Optional
+from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import uvicorn
@@ -45,6 +46,10 @@ class EvaluacionCopilotoRequest(BaseModel):
         ...,
         description="JSON con la informacion financiera del cliente de las 8 tablas de Banco Guayaquil + Equifax + OCR.",
     )
+    ruta_documento_opcional: Optional[str] = Field(
+        default=None,
+        description="Ruta local opcional de un archivo PDF o imagen externa (ej. 'estado_cuenta_externo_demo.pdf').",
+    )
 
 
 # ----------------------------------------------------------------------------
@@ -63,8 +68,9 @@ app = FastAPI(
     title="Banco Guayaquil - API Copiloto de Salud Financiera",
     description=(
         "Microservicio de Inteligencia Artificial para Banco Guayaquil. "
-        "Integra Guardrails de seguridad, modelo LightGBM en memoria, RAG Regulatorio Ecuatoriano "
-        "(JPRF, Super de Bancos, COMFyF, LOPDP) y generacion explicativa con Azure AI Foundry (gpt-4o)."
+        "Integra Azure AI Document Intelligence (prebuilt-layout), Guardrails de seguridad, "
+        "modelo LightGBM en memoria, RAG Regulatorio Ecuatoriano (JPRF, Super de Bancos, COMFyF, LOPDP) "
+        "y generacion explicativa con Azure AI Foundry (gpt-4o)."
     ),
     version="1.0.0",
     lifespan=lifespan,
@@ -85,7 +91,7 @@ def health_check():
     return {
         "status": "UP",
         "service": "banco-guayaquil-copiloto-ai",
-        "engine": "LightGBM + Azure AI Foundry (gpt-4o)",
+        "engine": "LightGBM + Azure Document Intelligence + Azure AI Foundry (gpt-4o)",
     }
 
 
@@ -98,52 +104,67 @@ def health_check():
 def evaluar_solicitud(
     payload: EvaluacionCopilotoRequest = Body(
         openapi_examples={
-            "compra_moto": {
-                "summary": "1. Compra Moto ($2,500 a 24 meses - Evaluacion Viable)",
+            "con_documento_ocr": {
+                "summary": "1. Evaluación con Estado de Cuenta Externo (Azure Document Intelligence)",
+                "description": "Procesa 'estado_cuenta_externo_demo.pdf', detecta deuda de $320 en Banco Pichincha y cambia la recomendacion a ROJO.",
+                "value": {
+                    "peticion_usuario": "Quiero comprarme una moto de $2,500 a 24 meses para ir a mi trabajo, ¿me alcanza con mi sueldo actual?",
+                    "datos_cliente": SAMPLE_CLIENTE_DATA,
+                    "ruta_documento_opcional": "estado_cuenta_externo_demo.pdf",
+                },
+            },
+            "compra_moto_sin_doc": {
+                "summary": "2. Compra Moto sin documento ($2,500 a 24 meses - Evaluacion Viable)",
                 "description": "Calcula cuota de $121.81/mes al 15.5%, evalua liquidez del cliente y genera botones de accion.",
                 "value": {
                     "peticion_usuario": "Quiero comprarme una moto de $2,500 a 24 meses para ir a mi trabajo, ¿me alcanza con mi sueldo actual?",
                     "datos_cliente": SAMPLE_CLIENTE_DATA,
+                    "ruta_documento_opcional": None,
                 },
             },
             "sobreendeudamiento": {
-                "summary": "2. Solicitud Excesiva ($24,000 a 8 meses - Semaforo Rojo + RAG JPRF)",
+                "summary": "3. Solicitud Excesiva ($24,000 a 8 meses - Semaforo Rojo + RAG JPRF)",
                 "description": "Alerta de sobreendeudamiento: cuota de $3,176.99/mes excede capacidad. Cita Resolucion JPRF-F-2023-080.",
                 "value": {
                     "peticion_usuario": "Hola quiero un credito de 24000 dolares a 8 meses plazo, ¿puedo?",
                     "datos_cliente": SAMPLE_CLIENTE_DATA,
+                    "ruta_documento_opcional": None,
                 },
             },
             "inversion_poliza": {
-                "summary": "3. Inversion en Poliza (Semaforo Verde + RAG COSEDE)",
+                "summary": "4. Inversion en Poliza (Semaforo Verde + RAG COSEDE)",
                 "description": "Recomienda rentabilizar ahorros al 6.50% anual respaldada por el seguro de depositos COSEDE hasta $32,000.",
                 "value": {
                     "peticion_usuario": "¿Donde me conviene invertir los $600 que tengo ahorrados en mi cuenta para ganar mas intereses?",
                     "datos_cliente": SAMPLE_CLIENTE_DATA,
+                    "ruta_documento_opcional": None,
                 },
             },
             "saludo_guardrail": {
-                "summary": "4. Saludo Simple (Guardrail - Costo 0 Tokens)",
+                "summary": "5. Saludo Simple (Guardrail - Costo 0 Tokens)",
                 "description": "Responde de inmediato en < 1ms sin gastar tokens ni ejecutar inferencia.",
                 "value": {
                     "peticion_usuario": "Hola como estas",
                     "datos_cliente": {"COD_CLTE": 10045892},
+                    "ruta_documento_opcional": None,
                 },
             },
             "fuera_de_dominio": {
-                "summary": "5. Pregunta Fuera de Dominio (Guardrail - Costo 0 Tokens)",
+                "summary": "6. Pregunta Fuera de Dominio (Guardrail - Costo 0 Tokens)",
                 "description": "Rechaza cortesmente preguntas absurdas o ajenas al ambito financiero.",
                 "value": {
                     "peticion_usuario": "¿Cual es la capital de Francia?",
                     "datos_cliente": {"COD_CLTE": 10045892},
+                    "ruta_documento_opcional": None,
                 },
             },
             "clonacion_tarjeta": {
-                "summary": "6. Urgencia / Fraude (Derivacion a Asesor Humano)",
+                "summary": "7. Urgencia / Fraude (Derivacion a Asesor Humano)",
                 "description": "Deriva inmediatamente a canales oficiales de Banco Guayaquil (Call Center 04 3730100 y WhatsApp).",
                 "value": {
                     "peticion_usuario": "Ayuda urgente, creo que me clonaron la tarjeta de credito en un cajero",
                     "datos_cliente": {"COD_CLTE": 10045892},
+                    "ruta_documento_opcional": None,
                 },
             },
         }
@@ -154,6 +175,7 @@ def evaluar_solicitud(
         resultado = motor.evaluar_peticion_cliente(
             peticion_usuario=payload.peticion_usuario,
             datos_cliente=payload.datos_cliente,
+            documento_adjunto=payload.ruta_documento_opcional,
         )
         return resultado
     except Exception as exc:
@@ -161,6 +183,36 @@ def evaluar_solicitud(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error en el motor de IA de Banco Guayaquil: {str(exc)}",
+        )
+
+
+@app.post(
+    "/api/v1/copiloto/evaluar-con-documento",
+    status_code=status.HTTP_200_OK,
+    tags=["Copiloto Financiero"],
+    summary="Evalua la peticion con un archivo PDF o imagen subido directamente (multipart/form-data)",
+)
+async def evaluar_con_archivo_adjunto(
+    archivo: UploadFile = File(..., description="Documento PDF o imagen subido por el cliente"),
+    peticion_usuario: str = Form(..., description="Pregunta o consulta en lenguaje natural"),
+    datos_cliente_json: str = Form(..., description="JSON con las 8 tablas de Banco Guayaquil del cliente"),
+):
+    try:
+        motor: MotorIAFoundry = app.state.motor
+        datos_cliente = json.loads(datos_cliente_json)
+        contenido_bytes = await archivo.read()
+        resultado = motor.evaluar_peticion_cliente(
+            peticion_usuario=peticion_usuario,
+            datos_cliente=datos_cliente,
+            documento_adjunto=contenido_bytes,
+            nombre_archivo=archivo.filename,
+        )
+        return resultado
+    except Exception as exc:
+        logger.error(f"Error procesando archivo adjunto: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error procesando documento en Copiloto: {str(exc)}",
         )
 
 
