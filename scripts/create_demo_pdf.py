@@ -212,3 +212,4 @@ if __name__ == "__main__":
     out = Path(__file__).resolve().parent.parent / "data" / "samples" / "estado_cuenta_externo_demo.pdf"
     out.parent.mkdir(parents=True, exist_ok=True)
     generar_estado_cuenta_pdf(out)
+

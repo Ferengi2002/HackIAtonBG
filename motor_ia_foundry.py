@@ -45,16 +45,19 @@ try:
     from src.inference.guardrails import GuardrailsEngine
     from src.inference.rag_regulatorio import RAGRegulatorioEcuador
     from src.inference.document_intelligence_ia import DocumentIntelligenceEngine, DocumentIntelligenceResultDTO
+    from src.inference.recommendations import RecommendationEngine
 except ImportError:
     try:
         from guardrails import GuardrailsEngine
         from rag_regulatorio import RAGRegulatorioEcuador
         from document_intelligence_ia import DocumentIntelligenceEngine, DocumentIntelligenceResultDTO
+        from recommendations import RecommendationEngine
     except ImportError:
         GuardrailsEngine = None  # type: ignore[assignment,misc]
         RAGRegulatorioEcuador = None  # type: ignore[assignment,misc]
         DocumentIntelligenceEngine = None  # type: ignore[assignment,misc]
         DocumentIntelligenceResultDTO = None  # type: ignore[assignment,misc]
+        RecommendationEngine = None  # type: ignore[assignment,misc]
 
 
 logging.basicConfig(
@@ -292,12 +295,13 @@ class MotorIAFoundry:
         usando un prompt ultra compacto en gpt-4o-mini (o fallback regex determinista).
         """
         system_prompt_nlu = (
-            "Eres un extractor NLU bancario. Devuelve SOLO un JSON valido con las claves exactas: "
+            "Eres un extractor NLU bancario oficial de Banco Guayaquil. Devuelve SOLO un JSON valido con las claves exactas: "
             '{"intencion": "ENDEUDAMIENTO"|"INVERSION"|"AHORRO"|"CONSULTA_GENERAL", '
             '"monto_solicitado": float, "plazo_meses": int, "cuota_mensual_nueva": float, '
             '"producto_mencionado": str}. '
             "Si no menciona plazo usa 12. Si menciona cuota mensual ponla en cuota_mensual_nueva y monto_solicitado=0. "
-            "Si menciona monto total ponlo en monto_solicitado y cuota_mensual_nueva=0."
+            "Si menciona monto total ponlo en monto_solicitado y cuota_mensual_nueva=0. "
+            "Si pregunta que hacer con su dinero, como rentabilizar o invertir sus ahorros, usa intencion 'INVERSION' o 'AHORRO'."
         )
 
         azure_json = self.foundry_client.call_chat_json(
@@ -351,9 +355,9 @@ class MotorIAFoundry:
         t_low = texto.lower()
 
         # 1. Detectar intencion
-        if any(w in t_low for w in ["invertir", "inversion", "inversión", "poliza", "póliza", "plazo fijo", "rendimiento"]):
+        if any(w in t_low for w in ["invertir", "inversion", "inversión", "poliza", "póliza", "plazo fijo", "rendimiento", "hacer con mi dinero", "hacer mi dinero", "hago con mi dinero", "poner mi dinero", "hacer crecer", "rentabilizar", "donde guardo mi dinero", "donde pongo mi plata"]):
             intencion = "INVERSION"
-        elif any(w in t_low for w in ["meta", "ahorrar", "ahorro programado", "guardar dinero"]):
+        elif any(w in t_low for w in ["meta", "ahorrar", "ahorro programado", "guardar dinero", "ahorro flexible"]):
             intencion = "AHORRO"
         elif any(
             w in t_low
@@ -684,21 +688,90 @@ class MotorIAFoundry:
                     f"Liquidez disponible en MAESTRO_CUENTAS (${float(f_base['SALDO_CUENTAS']):,.2f}) apta para rentabilizar en Poliza."
                 )
 
-        # Construccion de las 3 ofertas de productos de Banco Guayaquil
+        # Construccion de las 3 ofertas de productos de Banco Guayaquil + Asesoria Patrimonial
         saldo_cta = float(f_base["SALDO_CUENTAS"])
-        monto_poliza_sug = float(round(max(0.0, saldo_cta - 240.0), -1) if (saldo_cta >= 500 and semaforo != "ROJO") else 0.0)
-        interes_poliza = round(monto_poliza_sug * (6.50 / 100.0) * (180.0 / 360.0), 2)
+        cuota_tc_diferidos = float(f_base["CUOTA_DIFERIDOS_TC"])
 
-        ahorro_meta_mensual = float(
-            round(max(50.0, min(capacidad_maxima_cuota * 0.75, recorte_sugerido + 30.0)), -1)
-            if capacidad_maxima_cuota >= 40
-            else 40.0
-        )
-        meta_objetivo = float(
-            nlu.monto_solicitado
-            if (semaforo in {"ROJO", "AMARILLO"} and nlu.monto_solicitado > 0)
-            else 1500.0
-        )
+        # Determinar Tier Patrimonial segun saldo disponible y flujo neto
+        if saldo_cta >= 3000.0 or (saldo_cta >= 2000.0 and flujo_neto_actual >= 600.0):
+            tier_patrimonial = "TIER_ALTO_PATRIMONIAL"
+        elif saldo_cta >= 500.0 or flujo_neto_actual >= 250.0:
+            tier_patrimonial = "TIER_MEDIO_FLEXIBLE"
+        else:
+            tier_patrimonial = "TIER_BASICO_CRECIMIENTO"
+
+        tiene_deuda_cara_tc = bool(cuota_tc_diferidos >= 60.0 and saldo_cta >= 600.0)
+
+        if tier_patrimonial == "TIER_ALTO_PATRIMONIAL":
+            colchon_reserva = min(1200.0, max(600.0, round(saldo_cta * 0.20, -1)))
+            monto_poliza_sug = float(max(1000.0, round(saldo_cta - colchon_reserva, -2))) if semaforo != "ROJO" else 0.0
+            tasa_poliza = 7.25
+            plazo_poliza_dias = 180
+            interes_poliza = round(monto_poliza_sug * (tasa_poliza / 100.0) * (plazo_poliza_dias / 360.0), 2)
+            ahorro_meta_mensual = float(round(max(80.0, min(250.0, flujo_neto_actual * 0.25)), -1))
+            meta_objetivo = 3000.0
+            motivo_poliza = (
+                f"Cuentas con un saldo disponible de ${saldo_cta:,.2f}. Al colocar ${monto_poliza_sug:,.0f} a {plazo_poliza_dias} días al {tasa_poliza:.2f}% anual, "
+                f"ganas ${interes_poliza:,.2f} con seguro COSEDE hasta $32,000, dejando ${colchon_reserva:,.0f} disponibles en cuenta."
+            )
+            estrategia_asesoria = (
+                f"Maximizar rendimiento seguro en Póliza a Plazo Fijo al {tasa_poliza:.2f}% anual manteniendo colchón operativo."
+            )
+            valor_cliente = (
+                f"Rendimiento garantizado del {tasa_poliza:.2f}% anual superior a la inflación con respaldo de COSEDE hasta $32,000."
+            )
+            valor_banco = (
+                "Captación de depósitos a plazo fijo de alto valor patrimonial, estabilidad de fondeo para colocación crediticia."
+            )
+        elif tier_patrimonial == "TIER_MEDIO_FLEXIBLE":
+            colchon_reserva = min(500.0, max(200.0, round(saldo_cta * 0.35, -1)))
+            monto_poliza_sug = float(max(300.0, round(saldo_cta - colchon_reserva, -1))) if (saldo_cta >= 500.0 and semaforo != "ROJO") else 0.0
+            tasa_poliza = 6.50
+            plazo_poliza_dias = 90
+            interes_poliza = round(monto_poliza_sug * (tasa_poliza / 100.0) * (plazo_poliza_dias / 360.0), 2) if monto_poliza_sug > 0 else 0.0
+            ahorro_meta_mensual = float(round(max(50.0, min(120.0, max(50.0, flujo_neto_actual * 0.30))), -1))
+            meta_objetivo = 1500.0
+            motivo_poliza = (
+                f"Tienes ${saldo_cta:,.2f} en ahorros. Colocar ${monto_poliza_sug:,.0f} al {tasa_poliza:.2f}% a 90 días te genera intereses "
+                f"sin inmovilizar tu capital operativo."
+                if monto_poliza_sug >= 300.0
+                else "Con tu saldo actual, te conviene consolidar una meta flexible antes de inmovilizar a plazo fijo."
+            )
+            estrategia_asesoria = (
+                f"Estrategia híbrida: Póliza a corto plazo ({plazo_poliza_dias} días al {tasa_poliza:.2f}%) + Ahorro Programado flexible."
+            )
+            valor_cliente = (
+                "Rendimiento sobre ahorros sin perder la flexibilidad de tener liquidez para imprevistos mediante débito automático."
+            )
+            valor_banco = (
+                "Cross-selling equilibrado (Póliza + Meta de ahorro recurrente) e incremento de saldos medios por cliente."
+            )
+        else:
+            colchon_reserva = saldo_cta
+            monto_poliza_sug = 0.0
+            tasa_poliza = 0.0
+            plazo_poliza_dias = 0
+            interes_poliza = 0.0
+            ahorro_meta_mensual = float(round(max(30.0, min(60.0, max(30.0, flujo_neto_actual * 0.25 if flujo_neto_actual > 0 else 30.0))), -1))
+            meta_objetivo = 1000.0
+            motivo_poliza = "Tu prioridad hoy es armar un fondo de reserva antes de inmovilizar dinero a plazo fijo."
+            estrategia_asesoria = (
+                f"Construir Fondo de Emergencia con Ahorro Flexible en MAESTRO_METAS debitando ${ahorro_meta_mensual:,.0f}/mes sin penalidades."
+            )
+            valor_cliente = (
+                "Construyes un colchón protector ante imprevistos sin pagar comisiones ni depender de créditos caros."
+            )
+            valor_banco = (
+                "Reduce la probabilidad de morosidad temprana en tarjetas y microcréditos, y fomenta fidelidad financiera."
+            )
+
+        if semaforo == "ROJO" and nlu.intencion == "ENDEUDAMIENTO":
+            meta_objetivo = float(nlu.monto_solicitado if nlu.monto_solicitado > 0 else 1500.0)
+            ahorro_meta_mensual = float(
+                round(max(40.0, min(capacidad_maxima_cuota * 0.75, recorte_sugerido + 30.0)), -1)
+                if capacidad_maxima_cuota >= 40
+                else 40.0
+            )
 
         recomendaciones_bg = {
             "1_oferta_maestro_creditos": {
@@ -712,28 +785,40 @@ class MotorIAFoundry:
                 "CANAL_VENTA": "APP_AI_BANKING",
             },
             "2_oferta_maestro_polizas": {
-                "habilitado": bool(monto_poliza_sug >= 300.0),
-                "motivo": (
-                    f"Tienes un SALDO de ${saldo_cta:,.2f} en tu cuenta de ahorros que puede ganar mayor interes en plazo fijo."
-                    if monto_poliza_sug >= 300.0
-                    else "Prioriza estabilizar tu flujo mensual antes de inmovilizar liquidez a plazo fijo."
-                ),
+                "habilitado": bool(monto_poliza_sug >= 300.0 and semaforo != "ROJO"),
+                "motivo": motivo_poliza,
                 "MONTO_sugerido": float(monto_poliza_sug),
-                "PLAZO_DIAS": 180,
-                "TASA_anual": 6.50,
+                "PLAZO_DIAS": int(plazo_poliza_dias),
+                "TASA_anual": float(tasa_poliza),
                 "interes_estimado_ganar": float(interes_poliza),
+                "respaldo_cosede_monto": 32000.00,
             },
             "3_oferta_maestro_metas": {
                 "habilitado": True,
                 "motivo": (
                     f"En lugar de sobreendeudarte hoy, ahorra ${ahorro_meta_mensual:,.0f}/mes en MAESTRO_METAS para reunir ${meta_objetivo:,.0f} sin pagar intereses."
                     if semaforo == "ROJO"
-                    else f"Recortando ${recorte_sugerido:,.0f}/mes de gastos en restaurantes/apps de MVTO_CUENTAS, cubres tu meta con holgura."
+                    else (
+                        f"Ahorra ${ahorro_meta_mensual:,.0f}/mes en MAESTRO_METAS de forma flexible para contingencias y hacer crecer tu liquidez."
+                        if nlu.intencion in {"INVERSION", "AHORRO"}
+                        else f"Recortando ${recorte_sugerido:,.0f}/mes de gastos en restaurantes/apps de MVTO_CUENTAS, cubres tu meta con holgura."
+                    )
                 ),
                 "FRECUENCIA": "M",
                 "MONTO_DEBITO_sugerido": float(ahorro_meta_mensual),
                 "META_objetivo": float(meta_objetivo),
                 "DIA_DEBITO": 15,
+            },
+            "asesoria_patrimonial_inteligente": {
+                "tier_patrimonial": tier_patrimonial,
+                "saldo_cuentas_actual": float(saldo_cta),
+                "colchon_reserva_sugerido": float(colchon_reserva),
+                "estrategia_principal": estrategia_asesoria,
+                "tiene_deuda_cara_tc": tiene_deuda_cara_tc,
+                "valor_mutuo": {
+                    "valor_para_cliente": valor_cliente,
+                    "valor_para_banco_guayaquil": valor_banco,
+                },
             },
         }
 
@@ -777,6 +862,14 @@ class MotorIAFoundry:
                 "recorte_gastos_sugerido": recorte_sugerido,
                 "ahorro_meta_sugerido": ahorro_meta_mensual,
                 "monto_poliza_sugerido": monto_poliza_sug,
+                "tasa_poliza_sugerida": tasa_poliza,
+                "plazo_poliza_dias": plazo_poliza_dias,
+                "interes_poliza_estimado": interes_poliza,
+                "colchon_reserva_sugerido": colchon_reserva,
+                "tier_patrimonial": tier_patrimonial,
+                "tiene_deuda_cara_tc": tiene_deuda_cara_tc,
+                "cuota_diferidos_tc": cuota_tc_diferidos,
+                "estrategia_asesoria": estrategia_asesoria,
             },
         }
 
@@ -796,19 +889,29 @@ class MotorIAFoundry:
         recs = resultado_subpaso_b["recomendaciones_productos_bg"]
 
         system_prompt_xai = (
-            "Eres el Copiloto de Salud Financiera de Banco Guayaquil. "
-            "Recibes metricas exactas de nuestro modelo ML de riesgo. "
+            "Eres el Copiloto de Salud Financiera y Asesor Patrimonial de Banco Guayaquil. "
+            "Recibes metricas exactas de nuestro modelo ML de riesgo y perfil patrimonial. "
             "Responde SOLO un JSON con dos claves: "
             '{"titulo_pantalla": str, "explicacion_ia": str}. '
-            "Reglas de tono: "
-            "1. Si semaforo es ROJO: inicia diciendo 'Te recomendamos que no hagas eso en este momento porque...' "
-            "explicando con sus numeros exactos por que caeria en mora y proponle el plan de ahorro en MAESTRO_METAS o ajuste. "
-            "2. Si semaforo es AMARILLO: dile que si le alcanza pero con lo justo, y explicale cuanto recortar en gastos variables "
-            "o ahorrar de entrada en MAESTRO_METAS para no asfixiar su liquidez. "
-            "3. Si semaforo es VERDE: felicitalo, confirma que puede tomar el credito o invertir en MAESTRO_POLIZAS con sus cifras exactas. "
-            "4. Si 'documento_ocr' esta presente con gastos_ocultos > 0: MENCIONA EXPLÍCITAMENTE la entidad y cuota detectada en el documento "
-            "(ej. cuota mensual de $320 en Banco Pichincha) y explica como esa obligacion externa reduce su liquidez o condiciona la decision. "
-            "Maximo 85 palabras en explicacion_ia. Cero emojis."
+            "Reglas de tono y negocio: "
+            "1. Si la intencion es INVERSION o AHORRO (o el usuario pregunta que hacer con su dinero, como rentabilizar o donde guardar): "
+            "   Aplica la asesoria patrimonial segun 'tier_patrimonial': "
+            "   - TIER_ALTO_PATRIMONIAL ($3,000+): Felicitalo por su solvencia y recomiendale abrir una Poliza a Plazo Fijo en MAESTRO_POLIZAS "
+            "     por el monto sugerido ($X) al 7.25% anual a 180 dias con respaldo COSEDE hasta $32,000, dejando su colchon operativo ($Y) en cuenta de ahorros. "
+            "   - TIER_MEDIO_FLEXIBLE ($500 - $3,000): Proponle una estrategia hibrida: rentabilizar una parte en Poliza a corto plazo (90 dias al 6.50%) "
+            "     y activar Ahorro Programado flexible en MAESTRO_METAS ($X/mes) para no comprometer su liquidez diaria. "
+            "   - TIER_BASICO_CRECIMIENTO (< $500): Recomiendale activar Ahorro Flexible en MAESTRO_METAS por $X/mes para armar su fondo de emergencia de 3 meses. "
+            "   - Si 'tiene_deuda_cara_tc' es true: Recomiendale primero liquidar o amortizar su saldo diferido de tarjeta (~16% anual) "
+            "     porque ahorrarse ese interes da un rendimiento neto superior a cualquier inversion conservadora. "
+            "   - Muestra el valor mutuo: rentabilidad y seguridad garantizada para el cliente, captacion y solidez para Banco Guayaquil. "
+            "2. Si la intencion es ENDEUDAMIENTO: "
+            "   - Si semaforo es ROJO: inicia diciendo 'Te recomendamos que no hagas eso en este momento porque...' explicando con numeros exactos "
+            "     por que caeria en mora y proponle el plan de ahorro en MAESTRO_METAS o recalcular monto seguro. "
+            "   - Si semaforo es AMARILLO: dile que si le alcanza pero con lo justo, y explicale cuanto recortar en gastos variables o ahorrar de entrada. "
+            "   - Si semaforo es VERDE: felicitalo y confirma que puede tomar el credito con su cuota aprobada y capacidad maxima. "
+            "3. Si 'documento_ocr' esta presente con gastos_ocultos > 0: MENCIONA EXPLICITAMENTE la entidad y cuota detectada en el documento "
+            "   (ej. cuota mensual de $320 en Banco Pichincha) y explica como esa obligacion externa reduce su liquidez o condiciona la decision. "
+            "Maximo 85 palabras en explicacion_ia. Cero emojis. Tono profesional y empatico."
         )
 
         user_prompt_compacto = json.dumps(
@@ -853,8 +956,52 @@ class MotorIAFoundry:
         saldo = ctx["saldo_cuentas"]
         recorte = ctx["recorte_gastos_sugerido"]
         meta_mes = ctx["ahorro_meta_sugerido"]
-        poliza = ctx["monto_poliza_sugerido"]
+        poliza = ctx.get("monto_poliza_sugerido", 0.0)
+        tasa_poliza = ctx.get("tasa_poliza_sugerida", 6.50)
+        plazo_poliza = ctx.get("plazo_poliza_dias", 180)
+        interes_ganar = ctx.get("interes_poliza_estimado", 0.0)
+        colchon = ctx.get("colchon_reserva_sugerido", 240.0)
+        tier = ctx.get("tier_patrimonial", "TIER_MEDIO_FLEXIBLE")
+        tiene_tc = ctx.get("tiene_deuda_cara_tc", False)
+        cuota_tc = ctx.get("cuota_diferidos_tc", 0.0)
+        intencion = ctx.get("intencion", "ENDEUDAMIENTO")
 
+        # --------------------------------------------------------------------
+        # CASO 1: ASESORIA PATRIMONIAL E INVERSION (Preguntas sobre que hacer con el dinero)
+        # --------------------------------------------------------------------
+        if intencion in {"INVERSION", "AHORRO"}:
+            if tier == "TIER_ALTO_PATRIMONIAL":
+                titulo = f"Estrategia Patrimonial: Rentabiliza ${poliza:,.0f} en Póliza a Plazo Fijo ({tasa_poliza:.2f}% anual)."
+                prepago_aviso = (
+                    f"Como mantienes diferidos de tarjeta de crédito, te sugerimos destinar parte a amortizarlos para ahorrarte el ~16% de interés. "
+                    if tiene_tc
+                    else ""
+                )
+                explicacion = (
+                    f"Cuentas con un saldo disponible de ${saldo:,.2f} y finanzas solventes. {prepago_aviso}"
+                    f"Te recomendamos abrir una Póliza en MAESTRO_POLIZAS por ${poliza:,.0f} a {plazo_poliza} días al {tasa_poliza:.2f}% anual, "
+                    f"asegurando ${interes_ganar:,.2f} garantizados con respaldo COSEDE hasta $32,000, "
+                    f"dejando un colchón de ${colchon:,.0f} en tu cuenta de ahorros para tu día a día."
+                )
+            elif tier == "TIER_MEDIO_FLEXIBLE":
+                titulo = f"Estrategia Híbrida: Póliza a corto plazo (${poliza:,.0f}) + Ahorro Flexible."
+                explicacion = (
+                    f"Tienes ${saldo:,.2f} en ahorros y un flujo mensual libre de ${flujo:,.2f}. La opción más inteligente es colocar ${poliza:,.0f} "
+                    f"a {plazo_poliza} días en MAESTRO_POLIZAS al {tasa_poliza:.2f}% anual para rentabilizar tu dinero, complementando con un Ahorro Flexible de "
+                    f"${meta_mes:,.0f}/mes en MAESTRO_METAS para disponer de liquidez diaria sin descapitalizarte."
+                )
+            else:
+                titulo = "Fondo de Emergencia: Ahorro Flexible en MAESTRO_METAS."
+                explicacion = (
+                    f"Con tu saldo de ${saldo:,.2f} y flujo libre de ${flujo:,.2f}/mes, la prioridad es construir un fondo de emergencia antes de "
+                    f"inmovilizar capital a plazo fijo. Te recomendamos activar un débito de ${meta_mes:,.0f}/mes en MAESTRO_METAS en quincena "
+                    f"o fin de mes, asegurando liquidez sin comisiones ni penalidades."
+                )
+            return titulo, explicacion
+
+        # --------------------------------------------------------------------
+        # CASO 2: ENDEUDAMIENTO (SEMAFORO ROJO / AMARILLO / VERDE)
+        # --------------------------------------------------------------------
         if sem == "ROJO":
             doc_info = ctx.get("documento_ocr", {})
             mencion_doc = ""
@@ -883,33 +1030,55 @@ class MotorIAFoundry:
                 f"variables de restaurantes/apps en MVTO_CUENTAS o ahorrar durante 4 meses una entrada en MAESTRO_METAS para reducir la cuota."
             )
         else:
-            if ctx["intencion"] == "INVERSION":
-                titulo = f"Excelente momento para invertir tus ahorros (Score Equifax {eq})."
-                explicacion = (
-                    f"Tienes finanzas saludables sin deudas vencidas, un flujo libre de ${flujo:,.2f}/mes y ${saldo:,.2f} "
-                    f"en tu cuenta de ahorros. Te recomendamos abrir una Póliza de Inversión en MAESTRO_POLIZAS por "
-                    f"${max(poliza, monto):,.0f} al 6.50% anual por 180 días y complementar con un ahorro programado de "
-                    f"${meta_mes:,.0f}/mes en MAESTRO_METAS."
-                )
-            else:
-                titulo = f"Excelente salud financiera: Sí puedes asumir el crédito de ${monto:,.0f}."
-                extra_poliza = (
-                    f" Además, como mantienes ${saldo:,.2f} en ahorros, puedes rentabilizar ${poliza:,.0f} en una Póliza al 6.5% anual."
-                    if poliza >= 300
-                    else ""
-                )
-                explicacion = (
-                    f"Analicé tus cuentas de Banco Guayaquil y tu score Equifax de {eq}. No tienes saldos vencidos y "
-                    f"cuentas con ${flujo:,.2f} libres al mes (capacidad máxima de cuota de ${cap:,.2f}/mes). "
-                    f"La nueva cuota de ${cuota:,.2f}/mes encaja holgadamente dejándote ${flujo_post:,.2f}/mes de liquidez.{extra_poliza}"
-                )
+            titulo = f"Excelente salud financiera: Sí puedes asumir el crédito de ${monto:,.0f}."
+            extra_poliza = (
+                f" Además, como mantienes ${saldo:,.2f} en ahorros, puedes rentabilizar ${poliza:,.0f} en una Póliza al {tasa_poliza:.2f}% anual."
+                if poliza >= 300
+                else ""
+            )
+            explicacion = (
+                f"Analicé tus cuentas de Banco Guayaquil y tu score Equifax de {eq}. No tienes saldos vencidos y "
+                f"cuentas con ${flujo:,.2f} libres al mes (capacidad máxima de cuota de ${cap:,.2f}/mes). "
+                f"La nueva cuota de ${cuota:,.2f}/mes encaja holgadamente dejándote ${flujo_post:,.2f}/mes de liquidez.{extra_poliza}"
+            )
 
         return titulo, explicacion
 
     @staticmethod
     def _construir_acciones_ui(ctx: Dict[str, Any], recs: Dict[str, Any]) -> List[Dict[str, str]]:
         sem = ctx["semaforo"]
+        intencion = ctx.get("intencion", "ENDEUDAMIENTO")
+        poliza = ctx.get("monto_poliza_sugerido", 0.0)
+        tasa_poliza = ctx.get("tasa_poliza_sugerida", 6.50)
+        colchon = ctx.get("colchon_reserva_sugerido", 300.0)
+        tiene_tc = ctx.get("tiene_deuda_cara_tc", False)
         acciones: List[Dict[str, str]] = []
+
+        # Acciones prioritarias si la intencion es Inversion o Ahorro
+        if intencion in {"INVERSION", "AHORRO"}:
+            if tiene_tc:
+                acciones.append({
+                    "tipo": "PREPAGAR_TC",
+                    "label": "Amortizar Diferidos Tarjeta (~16% anual)",
+                    "payload_tabla": "MAESTRO_TC",
+                })
+            if poliza >= 300.0:
+                acciones.append({
+                    "tipo": "CREAR_POLIZA",
+                    "label": f"Invertir ${poliza:,.0f} en Póliza ({tasa_poliza:.2f}% anual)",
+                    "payload_tabla": "MAESTRO_POLIZAS",
+                })
+                acciones.append({
+                    "tipo": "RESERVAR_COLCHON",
+                    "label": f"Mantener Colchón Disponible (${colchon:,.0f})",
+                    "payload_tabla": "MAESTRO_CUENTAS",
+                })
+            acciones.append({
+                "tipo": "CREAR_META_AHORRO",
+                "label": f"Programar Ahorro Metas (${ctx['ahorro_meta_sugerido']:,.0f}/mes)",
+                "payload_tabla": "MAESTRO_METAS",
+            })
+            return acciones
 
         if sem == "ROJO":
             acciones.append(
