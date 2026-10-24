@@ -30,6 +30,7 @@ class GuardrailCheckResult(BaseModel):
         "FUERA_DE_DOMINIO",
         "CASO_SENSIBLE_ASESOR_HUMANO",
         "INTENTO_JAILBREAK",
+        "INTENTO_EXFILTRACION_O_SECRETOS",
     ] = Field(..., description="Clasificacion de la peticion del usuario.")
     idioma_detectado: Literal["es", "en", "qu"] = Field(
         default="es", description="Idioma detectado: 'es' (Espanol), 'en' (Ingles), 'qu' (Kichwa)."
@@ -84,6 +85,29 @@ class GuardrailsEngine:
         r"bypass\s+rules",
     ]
 
+    # Patrones estrictos de Exfiltración de Credenciales, Código, .env o PII de otros usuarios (OWASP LLM02)
+    PATRONES_EXFILTRACION_Y_SECRETOS = [
+        # Variables de entorno, .env, credenciales y API keys
+        r"\.env",
+        r"dotenv",
+        r"(?:credenciales|credentials|secretos?|secrets?|api[_\s]?keys?|tokens?)",
+        r"(?:contrase[ñn]a|passwords?|llave[s]?\s+privada[s]?|private[_\s]?key)",
+        r"(?:azure[_\s]?openai|connection[_\s]?string|cadena\s+de\s+conexi[oó]n)",
+        r"variables?\s+de\s+entorno",
+        r"env\s+vars?",
+        # Código fuente, arquitectura interna, scripts y archivos del sistema
+        r"(?:c[oó]digo\s+(?:de\s+la\s+app|fuente|python|del\s+sistema))",
+        r"(?:source[_\s]?code|mu[eé]strame\s+el\s+c[oó]digo|dame\s+el\s+c[oó]digo|ver\s+el\s+c[oó]digo)",
+        r"(?:archivos?\s+del\s+proyecto|archivos?\s+locales|qu[eé]\s+archivos\s+tienes)",
+        r"(?:app\.py|motor_ia_foundry\.py|guardrails\.py|requirements\.txt)",
+        r"(?:c[oó]mo\s+est[aá]s\s+programad[oa]|qu[eé]\s+instrucciones\s+te\s+dieron|revela\s+tus\s+reglas)",
+        # Datos de otros usuarios, PII y violación de privacidad (Anti-IDOR)
+        r"(?:otros?\s+usuarios?|otros?\s+clientes?|otra\s+persona|otras\s+personas|otra\s+cuenta|otras\s+cuentas)",
+        r"(?:datos|saldo|cuenta|tarjeta|c[eé]dula|informaci[oó]n|score)\s+de\s+(?:otro|otra|otros|otras|dem[aá]s)\s+(?:cliente|usuario|persona|cuentas?)",
+        r"(?:base\s+de\s+datos\s+de\s+clientes|lista\s+de\s+clientes|quien\s+m[aá]s\s+tiene\s+cuenta)",
+        r"(?:informaci[oó]n\s+confidencial\s+de\s+terceros|cu[aá]nto\s+dinero\s+tienen\s+los\s+dem[aá]s)",
+    ]
+
     @classmethod
     def detectar_idioma(cls, texto: str) -> Literal["es", "en", "qu"]:
         t_low = texto.lower()
@@ -110,6 +134,18 @@ class GuardrailsEngine:
         texto = peticion.strip()
         t_low = texto.lower()
         idioma = cls.detectar_idioma(texto)
+
+        # --------------------------------------------------------------------
+        # 0. Filtro Anti-Exfiltración: Credenciales, .env, Código y Datos de Otros Usuarios (OWASP LLM02)
+        # --------------------------------------------------------------------
+        for patron in cls.PATRONES_EXFILTRACION_Y_SECRETOS:
+            if re.search(patron, t_low):
+                return GuardrailCheckResult(
+                    es_valido_para_pipeline_financiero=False,
+                    tipo_evento="INTENTO_EXFILTRACION_O_SECRETOS",
+                    idioma_detectado=idioma,
+                    respuesta_inmediata=cls._crear_respuesta_exfiltracion_seguridad(cod_clte, idioma),
+                )
 
         # --------------------------------------------------------------------
         # 1. Filtro de Seguridad: Jailbreaks / Prompt Injections
@@ -315,6 +351,42 @@ class GuardrailsEngine:
             acciones=[
                 {"tipo": "LLAMAR_SOPORTE", "label": f"Llamar al Call Center ({tel[:10]})", "payload_tabla": "SISTEMA_SEGURIDAD_BG"},
                 {"tipo": "WHATSAPP_OFICIAL", "label": "Abrir WhatsApp Oficial Banco Guayaquil", "payload_tabla": "SISTEMA_SEGURIDAD_BG"},
+            ],
+        )
+
+    @classmethod
+    def _crear_respuesta_exfiltracion_seguridad(cls, cod_clte: int, idioma: str) -> Dict[str, Any]:
+        if idioma == "en":
+            titulo = "Access Denied: Cybersecurity & Privacy Protection Protocol."
+            explicacion = (
+                "Due to strict banking cybersecurity standards, banking secrecy, and the Personal Data Protection Organic Law (LOPDP), "
+                "this assistant has restricted access and cannot disclose API credentials, environment variables (.env), source code, "
+                "or data belonging to other customers. Each banking session operates in an isolated and encrypted environment."
+            )
+        else:
+            titulo = "Acceso Denegado: Protocolo de Ciberseguridad y Privacidad Bancaria."
+            explicacion = (
+                "Por estrictas políticas de ciberseguridad, secreto bancario y la Ley Orgánica de Protección de Datos Personales (LOPDP), "
+                "este asistente tiene restringido el acceso a credenciales, variables de entorno (.env), código fuente de la app "
+                "o información confidencial de otros clientes. Cada sesión opera en un entorno estrictamente aislado y auditado para tu seguridad."
+            )
+
+        return cls._empaquetar_json_guardrail(
+            cod_clte=cod_clte,
+            titulo=titulo,
+            explicacion=explicacion,
+            tipo_guardrail="SEGURIDAD_EXFILTRACION_BLOQUEADA",
+            acciones=[
+                {
+                    "tipo": "CONSULTAR_MI_SALUD",
+                    "label": "Consultar Mi Propia Salud Financiera",
+                    "payload_tabla": "MAESTRO_CLIENTES",
+                },
+                {
+                    "tipo": "VER_POLITICA_SEGURIDAD",
+                    "label": "Ver Políticas de Ciberseguridad y LOPDP",
+                    "payload_tabla": "SISTEMA_SEGURIDAD_BG",
+                },
             ],
         )
 
