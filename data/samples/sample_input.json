@@ -1,0 +1,122 @@
+{
+  "transaccion_id": "req_bg_9901",
+  "maestro_clientes": {
+    "COD_CLTE": 10045892,
+    "IDENTIFICACION": "0923456789",
+    "TIPO_IDENTIFICACION": "CEDULA",
+    "TIPO_PERSONA": "NATURAL",
+    "GENERO": "M",
+    "ESTADO_CIVIL": "SOLTERO",
+    "SEGMENTO_GENERACIONAL": "Millennial",
+    "FECHA_NACIMIENTO": "1995-04-12",
+    "FECHA_VINCULACION": "2019-08-15",
+    "BANCA": "PERSONAS",
+    "SEGMENTO": "PREFERENTE"
+  },
+  "resumen_cuentas_y_movimientos": {
+    "cuentas_activas": [
+      {
+        "CUENTA": 2200458912,
+        "TIPO_CUENTA": "AHORROS",
+        "ESTADO": "ACTIVA",
+        "SALDO": 640.50
+      }
+    ],
+    "agregado_mvto_cuentas_mensual": {
+      "promedio_ingresos_credito_mes": 1450.00,
+      "promedio_egresos_debito_mes": 920.00,
+      "top_motivos_trx": [
+        { "MOTIVO_TRX": "PAGO ROL DE PAGOS", "TIPO_TRX": "CREDITO", "MONTO_MENSUAL": 1450.00 },
+        { "MOTIVO_TRX": "TRANSFERENCIA ARRIENDO", "TIPO_TRX": "DEBITO", "MONTO_MENSUAL": 400.00 },
+        { "MOTIVO_TRX": "CONSUMO RESTAURANTES / APPS", "TIPO_TRX": "DEBITO", "MONTO_MENSUAL": 220.00 }
+      ]
+    }
+  },
+  "resumen_creditos_vigentes": {
+    "operaciones_activas": [
+      {
+        "CODGRUOPE": "CON",
+        "NUMDOC": "OP-88321",
+        "CANAL_VENTA": "BANCA_MOVIL",
+        "MONTO": 3000.00,
+        "POR_VENCER": 1250.00,
+        "VENCIDO": 0.00,
+        "TASA": 15.60,
+        "FECHA_INGRESO": "2025-02-10",
+        "FECHA_VENCIMIENTO": "2027-02-10"
+      }
+    ],
+    "total_por_vencer": 1250.00,
+    "total_vencido_mora": 0.00
+  },
+  "resumen_tarjetas_tc": {
+    "tarjetas": [
+      {
+        "CUENTA_SYSTEM": 55412,
+        "MARCA": "VISA",
+        "STATUS": "ACTIVA",
+        "TIPO": "PRINCIPAL"
+      }
+    ],
+    "agregado_mvto_tc_mensual": {
+      "gasto_promedio_mensual_tc": 380.00,
+      "saldo_diferido_estimado_cuotas": 145.00,
+      "viajes_internacionales_detectados": true,
+      "paises_consumo_reciente": ["ECU", "USA", "PAN"],
+      "top_ubicaciones_trx": [
+        { "UBICACION_TRX": "SUPERMAXI", "MONTO_TRX": 160.00, "PLAZO_DIFERIDO": 1, "TASA_DIFERIDO": 0.00 },
+        { "UBICACION_TRX": "TIENDA TECNOLOGIA", "MONTO_TRX": 600.00, "PLAZO_DIFERIDO": 6, "TASA_DIFERIDO": 16.20 }
+      ]
+    }
+  },
+  "inversiones_y_ahorro_actual": {
+    "maestro_polizas": [
+      {
+        "FECHA_APERTURA": "2026-06-01T00:00:00",
+        "FECHA_VENCIDO": "2026-12-01T00:00:00",
+        "PLAZO_DIAS": 180,
+        "TASA": 6.25000,
+        "MONTO": 500.00
+      }
+    ],
+    "maestro_metas": [
+      {
+        "CUENTA": 2200458912,
+        "FRECUENCIA": "M",
+        "DIA_DEBITO": 15,
+        "MONTO_DEBITO": 50.00,
+        "META": 1000.00,
+        "MONTO_ACUM": 300.00,
+        "INTERES_GANADO": 8.40,
+        "ESTADO": "A",
+        "MESES_ACTIVOS": 6,
+        "CUMPLIO_META": 0
+      }
+    ]
+  },
+  "fuentes_externas_ia": {
+    "buro_equifax": {
+      "score_equifax": 785,
+      "deuda_otros_bancos": 450.00,
+      "cuota_mensual_otros_bancos": 65.00
+    },
+    "document_intelligence_ocr": {
+      "documento_subido": true,
+      "tipo_documento": "ESTADO_CUENTA_EXTERNO_O_ROL",
+      "ingresos_adicionales_detectados": 200.00,
+      "gastos_ocultos_detectados": 80.00
+    },
+    "estilo_vida_redes_sociales": {
+      "viajes_publicados_recientes": 1,
+      "score_estilo_vida": 7.2
+    }
+  },
+  "simulacion_solicitada_usuario": {
+    "quiere_simular": true,
+    "tipo_objetivo": "ENDEUDAMIENTO_COMPRA",
+    "monto_solicitado": 2000.00,
+    "plazo_meses": 24,
+    "cuota_estimada": 98.50
+  }
+}
+

@@ -1,0 +1,40 @@
+{
+  "model_name": "Banco Guayaquil - Credit Risk & Health Copilot",
+  "algorithm": "LightGBM (Leaf-wise Gradient Boosting)",
+  "version": "1.0.0",
+  "feature_names": [
+    "EDAD",
+    "ANTIGUEDAD_BANCO_ANIOS",
+    "INGRESOS_CREDITO_MES",
+    "EGRESOS_DEBITO_MES",
+    "SALDO_CUENTAS",
+    "CUOTA_CREDITOS_VIGENTES",
+    "CAPITAL_POR_VENCER",
+    "CAPITAL_VENCIDO",
+    "GASTO_PROMEDIO_TC",
+    "CUOTA_DIFERIDOS_TC",
+    "VIAJES_EXTERIOR_TC",
+    "MONTO_POLIZAS_VIGENTES",
+    "MONTO_ACUM_METAS",
+    "CUMPLIO_META_HIST",
+    "INGRESOS_EXTRA_OCR",
+    "GASTOS_OCULTOS_OCR",
+    "FLUJO_NETO_DISPONIBLE",
+    "SCORE_EQUIFAX",
+    "SCORE_ESTILO_VIDA_REDES"
+  ],
+  "metrics": {
+    "roc_auc_test": 0.9975,
+    "pr_auc_test": 0.9975,
+    "f1_score": 0.9736,
+    "recall_mora": 0.9802,
+    "accuracy": 0.9735,
+    "brier_loss": 0.0192,
+    "peso_redes_pct": 3.47
+  },
+  "risk_thresholds": {
+    "green_max_prob": 0.15,
+    "yellow_max_prob": 0.35,
+    "max_safe_dti_pct": 40.0
+  }
+}

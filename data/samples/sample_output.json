@@ -1,0 +1,73 @@
+{
+  "transaccion_id": "req_bg_9901",
+  "COD_CLTE": 10045892,
+  "evaluacion_riesgo_ml": {
+    "score_salud_interna": 93,
+    "probabilidad_caer_en_vencido_mora": 0.0,
+    "semaforo_salud_financiera": "VERDE",
+    "flujo_neto_mensual_disponible": 322.5,
+    "capacidad_maxima_nueva_cuota": 129.0,
+    "endeudamiento_actual_pct": 25.2,
+    "endeudamiento_con_simulacion_pct": 31.0
+  },
+  "dictamen_endeudamiento": {
+    "se_puede_endeudar": true,
+    "estado_resolucion": "APROBADO_OPTIMO",
+    "monto_maximo_recomendado": 2680.0,
+    "cuota_mensual_segura": 96.21,
+    "impacto_proyectado_equifax": "Manteniendo VENCIDO en $0.00 durante 6 meses, tu score pasará de 785 a ~815.",
+    "factores_clave_modelo": [
+      "Historial impecable en MAESTRO_CREDITOS (VENCIDO = $0.00).",
+      "Buen hábito de ahorro: tienes metas activas en MAESTRO_METAS en progreso.",
+      "Liquidez positiva en cuenta ($640.50) y consumos que respaldan estabilidad."
+    ]
+  },
+  "recomendaciones_productos_bg": {
+    "1_oferta_maestro_creditos": {
+      "habilitado": true,
+      "CODGRUOPE_sugerido": "CON",
+      "MONTO_aprobado": 2000.0,
+      "TASA_anual_preferencial": 14.2,
+      "plazo_meses": 24,
+      "cuota_mensual": 96.21,
+      "CANAL_VENTA": "APP_AI_BANKING"
+    },
+    "2_oferta_maestro_polizas": {
+      "habilitado": true,
+      "motivo": "Tienes un SALDO de $640.50 en tu cuenta de ahorros que no genera alto rendimiento.",
+      "MONTO_sugerido": 400.0,
+      "PLAZO_DIAS": 180,
+      "TASA_anual": 6.5,
+      "interes_estimado_ganar": 13.0
+    },
+    "3_oferta_maestro_metas": {
+      "habilitado": true,
+      "motivo": "Recortando $60 de gastos prescindibles en compras y apps de MVTO_CUENTAS, puedes acelerar tu meta.",
+      "FRECUENCIA": "M",
+      "MONTO_DEBITO_sugerido": 80.0,
+      "META_objetivo": 1500.0,
+      "DIA_DEBITO": 15
+    }
+  },
+  "agente_conversacional_foundry": {
+    "titulo_pantalla": "¡Excelente salud financiera! Sí puedes tomar el crédito de $2,000.",
+    "explicacion_ia": "Analicé tus cuentas de Banco Guayaquil, tu score Equifax de 785 y el documento adicional que subiste. No tienes ningún saldo vencido y te quedan $322.50 libres al mes después de todos tus gastos y tarjetas. La cuota de $96.21 encaja perfectamente en tu presupuesto. Además, como tienes $640.50 en tu cuenta de ahorros, te recomiendo mover $400 a una nueva Póliza al 6.5% por 180 días para que tu dinero trabaje mientras pagas el crédito.",
+    "acciones_ui": [
+      {
+        "tipo": "CREAR_CREDITO",
+        "label": "Desembolsar Crédito ($2,000)",
+        "payload_tabla": "MAESTRO_CREDITOS"
+      },
+      {
+        "tipo": "CREAR_POLIZA",
+        "label": "Invertir $400 en Póliza (6.5%)",
+        "payload_tabla": "MAESTRO_POLIZAS"
+      },
+      {
+        "tipo": "AUMENTAR_META",
+        "label": "Subir Ahorro Meta a $80/mes",
+        "payload_tabla": "MAESTRO_METAS"
+      }
+    ]
+  }
+}

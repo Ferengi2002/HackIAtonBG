@@ -1,0 +1,71 @@
+# ==============================================================================
+# .gitignore - Banco Guayaquil Copiloto de Salud Financiera
+# ==============================================================================
+
+# 1. Variables de entorno y secretos bancarios (CRITICO: NUNCA SUBIR)
+.env
+*.env
+*.pem
+*.key
+*.pfx
+
+# 2. Archivos comprimidos y binarios de empaquetado temporal
+*.zip
+*.tar.gz
+*.rar
+*.7z
+
+# 3. Python Cache y Build Artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 4. Entornos virtuales
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# 5. Jupyter Notebooks Checkpoints
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+
+# 6. Datos temporales y datos crudos pesados
+data/raw/
+*.log
+
+# 7. Configuraciones de IDE y Editores locales
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 8. Archivos del Sistema Operativo
+.DS_Store
+Thumbs.db
+ehthumbs.db
+[Dd]esktop.ini
+$RECYCLE.BIN/
