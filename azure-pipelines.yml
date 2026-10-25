@@ -36,6 +36,7 @@ variables:
   pythonVersion: '3.11'
   containerAppResourceGroup: 'rg-hackaton-grupo02'
   containerAppDeploymentEnvironment: 'credit-bg-dev'
+  containerAppArmTimeoutSeconds: '1800'
 
 stages:
   # ---------------------------------------------------------------
@@ -174,6 +175,7 @@ stages:
                 - task: AzureCLI@2
                   name: deployApi
                   displayName: Validar, crear y comprobar Container App
+                  timeoutInMinutes: 55
                   inputs:
                     azureSubscription: '$(azureServiceConnection)'
                     visibleAzLogin: false
@@ -192,6 +194,7 @@ stages:
                     TEMPLATE_FILE: '$(Pipeline.Workspace)/container-app-template/template.json'
                     PARAMETERS_FILE: '$(Pipeline.Workspace)/container-app-template/dev.parameters.json'
                     DEPLOY_REPORT_DIR: '$(Pipeline.Workspace)/container-app-deployment'
+                    DEPLOYMENT_TIMEOUT_SECONDS: $(containerAppArmTimeoutSeconds)
 
                 - task: PublishPipelineArtifact@1
                   displayName: Publicar evidencias y URL de Container App

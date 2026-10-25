@@ -237,6 +237,17 @@ consulta `/healthz` y `/openapi.json` sin autenticación, y publica la URL en el
 resumen de la ejecución. El artefacto `container-app-deployment-<intento>` conserva
 el What-If, los outputs, la revisión y los resultados de esas comprobaciones.
 
+El script muestra el inicio, fin y duración de cada fase; durante operaciones
+largas emite un mensaje cada 30 segundos. Reutiliza la extensión `containerapp`
+del agente y solo la instala si falta. El envío del despliegue usa `--no-wait`,
+seguido de consultas del estado ARM y del estado de sus recursos. Las operaciones
+y los errores también se guardan en `operations.json` y `deployment-state.json`.
+ARM Validate y What-If tienen un límite de 5 minutos cada uno, y la espera del
+despliegue es de 30 minutos, configurable con `containerAppArmTimeoutSeconds`.
+La tarea de despliegue tiene un máximo de 55 minutos y deja margen dentro del job
+para publicar evidencias. Si vence la espera del agente, la operación de Azure
+puede seguir ejecutándose; revisar su estado antes de iniciar otro despliegue.
+
 ### 5. Documentación Interactiva Swagger UI
 Abre en tu navegador:
 ```
