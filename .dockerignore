@@ -1,0 +1,28 @@
+# Enviar al build solamente los archivos necesarios para ejecutar la API.
+**
+!Dockerfile
+!.dockerignore
+!requirements.txt
+!app.py
+!motor_ia_foundry.py
+!src/
+!src/**
+!models/
+!models/bg_risk_lightgbm.joblib
+!models/model_metadata.json
+!data/
+!data/samples/
+!data/samples/sample_input.json
+!data/samples/sample_output.json
+!data/samples/estado_cuenta_externo_demo.pdf
+!estado_cuenta_externo_demo.pdf
+
+# Excluir tambien caches, pruebas y secretos dentro de las carpetas admitidas.
+**/__pycache__/
+**/*.py[cod]
+**/test_*.py
+**/.env*
+**/*.env
+**/*.pem
+**/*.key
+**/*.pfx

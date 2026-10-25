@@ -157,6 +157,25 @@ python app.py
 ```
 El servicio iniciará en `http://localhost:8000`.
 
+### Ejecutar con Docker
+
+Desde la raíz del repositorio:
+
+```bash
+docker build --tag ia-credit-bg:local .
+docker run --rm --name ia-credit-bg -p 8000:8000 ia-credit-bg:local
+```
+
+La imagen incluye el modelo entrenado, las muestras y el runtime OpenMP de
+LightGBM. Ejecuta Uvicorn con Python 3.11 y un usuario sin privilegios en el puerto
+`8000`. Comprueba el servicio en `http://localhost:8000/healthz` y abre Swagger en
+`http://localhost:8000/docs`.
+
+Para habilitar Azure, agrega `--env-file .env` antes del nombre de la imagen en
+`docker run`. Sin credenciales, la aplicación utiliza su modo local de fallback.
+`.env` y otros secretos quedan excluidos del contexto de construcción.
+El pipeline utiliza este `Dockerfile` desde la raíz para construir y publicar en ACR.
+
 ### 5. Documentación Interactiva Swagger UI
 Abre en tu navegador:
 ```
