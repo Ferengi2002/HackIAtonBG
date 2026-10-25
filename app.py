@@ -50,6 +50,10 @@ class EvaluacionCopilotoRequest(BaseModel):
         default=None,
         description="Ruta local opcional de un archivo PDF o imagen externa (ej. 'estado_cuenta_externo_demo.pdf').",
     )
+    historial_conversacion: Optional[List[Dict[str, str]]] = Field(
+        default=None,
+        description="Ventana de contexto: lista de mensajes previos [{'role': 'user'|'assistant', 'content': str}] para mantener continuidad en el chatbot.",
+    )
 
 
 # ----------------------------------------------------------------------------
@@ -236,6 +240,7 @@ def evaluar_solicitud(
             peticion_usuario=payload.peticion_usuario,
             datos_cliente=payload.datos_cliente,
             documento_adjunto=payload.ruta_documento_opcional,
+            historial_conversacion=payload.historial_conversacion,
         )
         return resultado
     except Exception as exc:
@@ -256,16 +261,19 @@ async def evaluar_con_archivo_adjunto(
     archivo: UploadFile = File(..., description="Documento PDF o imagen subido por el cliente"),
     peticion_usuario: str = Form(..., description="Pregunta o consulta en lenguaje natural"),
     datos_cliente_json: str = Form(..., description="JSON con las 8 tablas de Banco Guayaquil del cliente"),
+    historial_conversacion_json: Optional[str] = Form(None, description="JSON opcional con historial de mensajes previos [{'role': str, 'content': str}]"),
 ):
     try:
         motor: MotorIAFoundry = app.state.motor
         datos_cliente = json.loads(datos_cliente_json)
+        historial = json.loads(historial_conversacion_json) if historial_conversacion_json else None
         contenido_bytes = await archivo.read()
         resultado = motor.evaluar_peticion_cliente(
             peticion_usuario=peticion_usuario,
             datos_cliente=datos_cliente,
             documento_adjunto=contenido_bytes,
             nombre_archivo=archivo.filename,
+            historial_conversacion=historial,
         )
         return resultado
     except Exception as exc:

@@ -225,10 +225,21 @@ class AzureFoundryClient:
         user_prompt: str,
         max_tokens: int = 320,
         temperature: float = 0.1,
+        messages_history: Optional[List[Dict[str, str]]] = None,
     ) -> Optional[Dict[str, Any]]:
-        """Invoca gpt-4o-mini en Azure AI Foundry con Structured JSON y Exponential Backoff."""
+        """Invoca gpt-4o en Azure AI Foundry con Structured JSON, soporte de historial y Exponential Backoff."""
         if not self.is_live_azure or self.client is None:
             return None
+
+        messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt}]
+        if messages_history:
+            # Ventana deslizante: incluir como maximo los ultimos 6 mensajes (3 turnos) para cuidar tokens
+            for m in messages_history[-6:]:
+                role = "user" if m.get("role") == "user" else "assistant"
+                content = str(m.get("content", "")).strip()
+                if content:
+                    messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": user_prompt})
 
         max_retries = 3
         base_delay = 1.0
@@ -236,10 +247,7 @@ class AzureFoundryClient:
             try:
                 response = self.client.chat.completions.create(
                     model=self.deployment,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
+                    messages=messages,
                     response_format={"type": "json_object"},
                     max_tokens=max_tokens,
                     temperature=temperature,
@@ -320,11 +328,15 @@ class MotorIAFoundry:
     # ------------------------------------------------------------------------
     # SUBPASO A: NLU CON AZURE AI FOUNDRY (gpt-4o-mini) + FALLBACK LOCAL
     # ------------------------------------------------------------------------
-    def subpaso_a_extraer_nlu(self, peticion_usuario: str) -> NLUResultDTO:
+    def subpaso_a_extraer_nlu(
+        self,
+        peticion_usuario: str,
+        historial_reciente: Optional[List[Dict[str, str]]] = None,
+    ) -> NLUResultDTO:
         """
         Extrae intencion, subtipo_consulta, es_solicitud_deuda_nueva, monto_solicitado,
-        plazo_meses y cuota_mensual_nueva usando un prompt estructurado en gpt-4o-mini
-        (o fallback regex determinista con comprension semantica de intencion).
+        plazo_meses y cuota_mensual_nueva usando un prompt estructurado en gpt-4o
+        (o fallback regex determinista con comprension semantica de intencion y contexto de chat).
         """
         system_prompt_nlu = (
             "Eres un extractor NLU bancario oficial de Banco Guayaquil. Devuelve SOLO un JSON valido con las claves exactas: "
@@ -333,7 +345,8 @@ class MotorIAFoundry:
             '"es_solicitud_deuda_nueva": bool, '
             '"monto_solicitado": float, "plazo_meses": int, "cuota_mensual_nueva": float, '
             '"producto_mencionado": str, "en_estres_financiero": bool, "es_desempleo_o_perdida_ingreso": bool}. '
-            "Reglas de intencion: "
+            "Reglas de intencion y contexto: "
+            "- Continuidad conversacional / Chatbot: Si el cliente hace una pregunta de seguimiento ('¿y a 24 meses?', '¿y si es por $500?'), resuelve el contexto usando el historial previo, heredando el monto o plazo anterior si no se indicó uno nuevo. "
             "- Desempleo / despido / perdida ingresos / gano $1: intencion='REESTRUCTURACION_DEUDA', subtipo_consulta='DESEMPLEO_CRISIS', en_estres_financiero=true, es_desempleo_o_perdida_ingreso=true, es_solicitud_deuda_nueva=false, producto_mencionado='SOLUCION_PAGO_CONTINGENCIA_DESEMPLEO'. "
             "- Diagnostico / como estan mis finanzas / en que se me va el dinero / gastos / liquidez: intencion='DIAGNOSTICO_FINANCIERO', subtipo_consulta='GASTOS_HABITOS' o 'DIAGNOSTICO_GENERAL', es_solicitud_deuda_nueva=false, producto_mencionado='DIAGNOSTICO_SALUD'. "
             "- Score / buro / equifax / puntaje / calificacion / mejorar score: intencion='EDUCACION_SCORE', subtipo_consulta='MEJORAR_SCORE', es_solicitud_deuda_nueva=false, producto_mencionado='EDUCACION_EQUIFAX'. "
@@ -351,6 +364,7 @@ class MotorIAFoundry:
             user_prompt=peticion_usuario,
             max_tokens=180,
             temperature=0.0,
+            messages_history=historial_reciente,
         )
 
         intenciones_validas = {
@@ -373,7 +387,7 @@ class MotorIAFoundry:
             es_desempleo = bool(azure_json.get("es_desempleo_o_perdida_ingreso", False))
             origen = "AZURE_AI_FOUNDRY_GPT4O_MINI"
         else:
-            parsed = self._fallback_local_nlu(peticion_usuario)
+            parsed = self._fallback_local_nlu(peticion_usuario, historial_reciente=historial_reciente)
             intencion = parsed["intencion"]
             subtipo = parsed["subtipo_consulta"]
             es_deuda_nueva = parsed["es_solicitud_deuda_nueva"]
@@ -424,8 +438,10 @@ class MotorIAFoundry:
         )
 
     @staticmethod
-    def _fallback_local_nlu(texto: str) -> Dict[str, Any]:
-        """Extractor NLU local de respaldo determinista y exhaustivo."""
+    def _fallback_local_nlu(
+        texto: str, historial_reciente: Optional[List[Dict[str, str]]] = None
+    ) -> Dict[str, Any]:
+        """Extractor NLU local de respaldo determinista, exhaustivo y con memoria de contexto."""
         t_low = texto.lower()
 
         # 1. Detectar intencion y senales clave
@@ -576,6 +592,26 @@ class MotorIAFoundry:
                 cuota_mensual_nueva = primer_valor
             else:
                 monto_solicitado = primer_valor
+
+        # Memoria conversacional: si el usuario no repitió el monto pero pregunta por plazo o condiciones
+        if monto_solicitado <= 0.0 and historial_reciente:
+            for prev_msg in reversed(historial_reciente):
+                c_prev = prev_msg.get("content", "")
+                m_prev = re.findall(r"\$?\s*(\d{1,3}(?:[.,]\d{3})+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)", c_prev)
+                for cand in m_prev:
+                    try:
+                        v = float(cand.replace(",", ""))
+                        if 100.0 <= v <= 100000.0:
+                            monto_solicitado = v
+                            if intencion == "CONSULTA_GENERAL":
+                                intencion = "ENDEUDAMIENTO"
+                                es_deuda_nueva = True
+                                producto = "CREDITO_CONSUMO"
+                            break
+                    except ValueError:
+                        pass
+                if monto_solicitado > 0.0:
+                    break
 
         return {
             "intencion": intencion,
@@ -1253,10 +1289,12 @@ class MotorIAFoundry:
         self,
         peticion_usuario: str,
         resultado_subpaso_b: Dict[str, Any],
+        historial_reciente: Optional[List[Dict[str, str]]] = None,
     ) -> Dict[str, Any]:
         """
-        Envia UNICAMENTE el resumen matematico compacto del Subpaso B a gpt-4o-mini
-        para redactar el veredicto empatico, directo y accionable sin gastar tokens de mas.
+        Envia UNICAMENTE el resumen matematico compacto del Subpaso B a gpt-4o
+        para redactar el veredicto empatico, directo y accionable sin gastar tokens de mas,
+        manteniendo la continuidad conversacional si existe un chat activo.
         """
         ctx = resultado_subpaso_b["_contexto_compacto_llm"]
         recs = resultado_subpaso_b["recomendaciones_productos_bg"]
@@ -1270,37 +1308,38 @@ class MotorIAFoundry:
             "REGLA DE INTEGRIDAD DE DATOS (READ-ONLY): Como asistente automatizado eres de solo consulta y orientación; si el usuario pide actualizar, corregir o cambiar su score crediticio, ingresos o datos del banco, aclárale que no tienes autorización para modificar registros oficiales y que debe hacerlo formalmente por la App Banco Guayaquil (sección 'Actualizar Datos') o agencias. "
             "REGLA DE VOCABULARIO Y MARCA COMERCIAL: PROHIBIDO TOTALMENTE usar nombres de tablas SQL o base de datos interna (nada de MAESTRO_METAS, MAESTRO_POLIZAS, MVTO_CUENTAS, MAESTRO_CREDITOS, MAESTRO_CUENTAS, MAESTRO_TC). Usa exclusivamente lenguaje comercial de cara al cliente: 'Metas de Ahorro en tu App Banco Guayaquil', 'Póliza a Plazo Fijo', 'tus movimientos de cuenta', 'tu cuenta de ahorros', 'tus créditos'. "
             "Reglas de tono y negocio estrictas: "
-            "0. ALERTA DE CONTINGENCIA POR DESEMPLEO / PÉRDIDA DE INGRESOS (Si 'es_desempleo_o_crisis' es true, o el usuario expresa despido, pérdida de trabajo o ganar $1): "
+            "0. CONTINUIDAD CONVERSACIONAL (CHATBOT): Si el usuario realiza una pregunta de seguimiento ('¿y si es a 24 meses?', '¿y qué hago entonces?'), mantén coherencia con los turnos previos del chat, sin repetir saludos mecánicos y respondiendo directamente a la nueva duda con las cifras actualizadas. "
+            "1. ALERTA DE CONTINGENCIA POR DESEMPLEO / PÉRDIDA DE INGRESOS (Si 'es_desempleo_o_crisis' es true, o el usuario expresa despido, pérdida de trabajo o ganar $1): "
             "   - Trata al cliente con máxima empatía profesional y protectora. "
             "   - Recomiéndale con firmeza NO asumir nuevas deudas ni usar tarjetas de crédito para compras prescindibles. "
             "   - Aconséjale proteger al 100% sus ahorros existentes como Fondo de Emergencia líquido para alimentación y salud, SIN inmovilizarlos a plazo fijo. "
             "   - Indícale contactar de inmediato a Soluciones de Pago de Banco Guayaquil al 04 3730100 (opción 3) o WhatsApp oficial (+593 98 373 0100) para activar la cobertura de desempleo de su seguro de desgravamen o solicitar un plan preventivo de alivio financiero antes de entrar en mora. "
-            "1. ALERTA CRITICA DE SOBREENDEUDAMIENTO (Si 'es_sobreendeudado_critico' es true, no puede más o su flujo es negativo/deficitario): "
+            "2. ALERTA CRITICA DE SOBREENDEUDAMIENTO (Si 'es_sobreendeudado_critico' es true, no puede más o su flujo es negativo/deficitario): "
             "   - Recomiéndale de forma enfática y empática que NO HAGA ESO (NO tome nueva deuda ni asuma más compromisos). "
             "   - Indícale contactar con urgencia a un asesor especializado de Banco Guayaquil al 04 3730100 (opción 3) o WhatsApp para negociar y reestructurar su deuda. "
-            "2. DIAGNÓSTICO FINANCIERO Y GASTOS (Si la intención es DIAGNOSTICO_FINANCIERO o pregunta cómo están sus finanzas, gastos o liquidez): "
+            "3. DIAGNÓSTICO FINANCIERO Y GASTOS (Si la intención es DIAGNOSTICO_FINANCIERO o pregunta cómo están sus finanzas, gastos o liquidez): "
             "   - Presenta un diagnóstico real y conciso con sus cifras: flujo libre mensual (${flujo_libre_actual:,.2f}), DTI ({dti_actual_pct:.0f}%), saldo disponible en cuentas (${saldo_cuentas:,.2f}) y sus gastos en restaurantes/apps (${gasto_restaurantes_apps:,.2f}/mes) sugiriendo un ahorro de ${recorte_gastos_sugerido:,.0f}/mes. Jamás hables de cuota simulada de $0.00. "
-            "3. EDUCACIÓN SOBRE SCORE Y BURÓ EQUIFAX (Si la intención es EDUCACION_SCORE o pregunta sobre su score): "
+            "4. EDUCACIÓN SOBRE SCORE Y BURÓ EQUIFAX (Si la intención es EDUCACION_SCORE o pregunta sobre su score): "
             "   - Explica su Score Equifax actual ({score_equifax} puntos). Detalla los dos factores que más pesan: puntualidad en pagos (35%) y utilización de tarjetas por debajo del 50% de cupo (30%). Indica cómo mantener o subir su score. "
-            "4. SEGURO DE DESGRAVAMEN Y COBERTURAS (Si la intención es SEGUROS_Y_COBERTURAS o pregunta sobre desgravamen): "
+            "5. SEGURO DE DESGRAVAMEN Y COBERTURAS (Si la intención es SEGUROS_Y_COBERTURAS o pregunta sobre desgravamen): "
             "   - Explica que el Seguro de Desgravamen liquida el saldo insoluto en caso de fallecimiento o invalidez, y cubre hasta 6 cuotas mensuales por desempleo involuntario para dependientes. Canal de activación: 04 3730100 (opción 3). "
-            "5. COMPARATIVA FINANCIERA (Si la intención es COMPARATIVA_FINANCIERA o pregunta si pagar tarjeta vs póliza): "
+            "6. COMPARATIVA FINANCIERA (Si la intención es COMPARATIVA_FINANCIERA o pregunta si pagar tarjeta vs póliza): "
             "   - Explica con matemática financiera: los diferidos de tarjeta cobran ~16% anual regulado, mientras la póliza rinde 6.5% - 7.75%. Por ende, amortizar deuda de tarjeta al ~16% genera el mayor ahorro neto garantizado. Sugiere prepagar tarjeta primero y abrir póliza con el remanente. "
-            "6. CONSOLIDACIÓN DE DEUDAS (Si la intención es CONSOLIDACION_DEUDAS): "
+            "7. CONSOLIDACIÓN DE DEUDAS (Si la intención es CONSOLIDACION_DEUDAS): "
             "   - Explica que Banco Guayaquil ofrece unificar deudas en un solo crédito a tasa preferencial (14.20%) a plazo extendido, reduciendo la cuota mensual hasta en un 35%. "
-            "7. CONSULTAS PROCEDIMENTALES Y REQUISITOS (Si la intención es CONSULTA_PROCEDIMENTAL): "
+            "8. CONSULTAS PROCEDIMENTALES Y REQUISITOS (Si la intención es CONSULTA_PROCEDIMENTAL): "
             "   - Informa los límites y requisitos oficiales: retiro en cajero automático hasta $500/día, transferencias gratuitas directas por la App Banco Guayaquil, y requisitos de crédito (cédula, sustento de ingresos y sin mora). "
-            "8. ASESORÍA PATRIMONIAL E INVERSIÓN (Si la intención es INVERSIÓN o AHORRO, o menciona herencia o fondos a rentabilizar): "
+            "9. ASESORÍA PATRIMONIAL E INVERSIÓN (Si la intención es INVERSIÓN o AHORRO, o menciona herencia o fondos a rentabilizar): "
             "   - Si dispone de capital alto o herencia (ej. $15,000 - $25,000+): Recomiéndale abrir Póliza a Plazo Fijo en Banco Guayaquil con tasa preferencial (7.75% anual) con respaldo total legal de la COSEDE hasta $32,000, reservando un colchón de liquidez operativa ($3,000 - $5,000) en su cuenta de ahorros para contingencias o trámites sucesorios. "
             "   - TIER_ALTO_PATRIMONIAL ($3,000 - $15,000): Póliza a Plazo Fijo al 7.25% anual a 180 días con respaldo COSEDE ($32,000), dejando colchón operativo. "
             "   - TIER_MEDIO_FLEXIBLE ($500 - $3,000): Estrategia híbrida: Póliza a 90 días (6.50%) + Metas de Ahorro en tu App Banco Guayaquil. "
             "   - TIER_BASICO_CRECIMIENTO (< $500): Metas de Ahorro en tu App Banco Guayaquil para armar fondo de emergencia. "
             "   - Si tiene diferidos en TC (~16% anual): Recomiéndale amortizarlos para ahorrarse intereses altos. "
-            "9. ENDEUDAMIENTO normal (cuando el cliente pide un préstamo o comprar un bien): "
+            "10. ENDEUDAMIENTO normal (cuando el cliente pide un préstamo o comprar un bien): "
             "   - Si semáforo es ROJO: 'Te recomendamos que no hagas eso en este momento porque...' explicando con números exactos y proponiendo programar una Meta de Ahorro en tu App Banco Guayaquil. "
             "   - Si semáforo es AMARILLO: dile que sí le alcanza pero con lo justo, sugiriendo recortar consumos variables. "
             "   - Si semáforo es VERDE: felicítalo y confirma su cuota y plazo aprobados. "
-            "10. Si 'documento_ocr' tiene gastos_ocultos > 0: menciona la entidad y cuota detectada. "
+            "11. Si 'documento_ocr' tiene gastos_ocultos > 0: menciona la entidad y cuota detectada. "
             "Máximo 85 palabras en explicacion_ia. Cero emojis. Tono profesional, protector y empático."
         )
 
@@ -1314,6 +1353,7 @@ class MotorIAFoundry:
             user_prompt=user_prompt_compacto,
             max_tokens=220,
             temperature=0.2,
+            messages_history=historial_reciente,
         )
 
         if azure_xai and "titulo_pantalla" in azure_xai and "explicacion_ia" in azure_xai:
@@ -1833,17 +1873,31 @@ class MotorIAFoundry:
         datos_cliente: Dict[str, Any],
         documento_adjunto: Optional[Union[str, Path, bytes, BinaryIO]] = None,
         nombre_archivo: Optional[str] = None,
+        historial_conversacion: Optional[List[Dict[str, str]]] = None,
     ) -> Dict[str, Any]:
         """
-        Punto de entrada unico para el equipo de Backend:
+        Punto de entrada unico para el equipo de Backend / FastAPI:
         1. Evalua Guardrails de seguridad, dominio y saludos (Filtro < 1ms con 0 tokens).
-        2. Si es valida: Subpaso A (NLU) -> Subpaso B (LightGBM) -> RAG Regulatorio -> Subpaso C (XAI).
+        2. Procesa la ventana de contexto conversacional (Sliding Window: ultimos 6 mensajes).
+        3. Si es valida: Subpaso A (NLU contextual) -> Subpaso B (LightGBM) -> RAG Regulatorio -> Subpaso C (XAI con memoria).
+        4. Subpaso D: Supervisor de calidad (Checklist 5 Puntos + Reflection Gate).
         """
         cod_clte = datos_cliente.get(
             "COD_CLTE",
             datos_cliente.get("maestro_clientes", {}).get("COD_CLTE", 10045892),
         )
         transaccion_id = datos_cliente.get("transaccion_id", f"req_bg_{random.randint(1000, 9999)}")
+
+        # --------------------------------------------------------------------
+        # NORMALIZACION DE VENTANA DE CONTEXTO CONVERSACIONAL (CHATBOT SLIDING WINDOW)
+        # --------------------------------------------------------------------
+        historial_reciente: Optional[List[Dict[str, str]]] = None
+        if historial_conversacion:
+            historial_reciente = [
+                {"role": str(m.get("role", "user")), "content": str(m.get("content", "")).strip()}
+                for m in historial_conversacion
+                if isinstance(m, dict) and m.get("content")
+            ][-6:]
 
         # --------------------------------------------------------------------
         # PROCESAMIENTO OPCIONAL DE DOCUMENTO ADJUNTO (AZURE DOCUMENT INTELLIGENCE)
@@ -1886,9 +1940,9 @@ class MotorIAFoundry:
                 return resp
 
         # --------------------------------------------------------------------
-        # SUBPASO A: NLU FINANCIERO (Azure AI Foundry gpt-4o / Fallback)
+        # SUBPASO A: NLU FINANCIERO (Azure AI Foundry gpt-4o / Fallback) con Contexto
         # --------------------------------------------------------------------
-        nlu_dto = self.subpaso_a_extraer_nlu(peticion_usuario)
+        nlu_dto = self.subpaso_a_extraer_nlu(peticion_usuario, historial_reciente=historial_reciente)
 
         # --------------------------------------------------------------------
         # SUBPASO B: INFERENCIA ML LIGHTGBM + CAPACIDAD + SEMAFORO
@@ -1925,9 +1979,11 @@ class MotorIAFoundry:
             }
 
         # --------------------------------------------------------------------
-        # SUBPASO C: EXPLICACION XAI CON FOUNDRY (gpt-4o) + MULTILINGÜE
+        # SUBPASO C: EXPLICACION XAI CON FOUNDRY (gpt-4o) + MULTILINGÜE + CONTINUIDAD
         # --------------------------------------------------------------------
-        agente_foundry = self.subpaso_c_generar_respuesta_foundry(peticion_usuario, res_b)
+        agente_foundry = self.subpaso_c_generar_respuesta_foundry(
+            peticion_usuario, res_b, historial_reciente=historial_reciente
+        )
 
         # --------------------------------------------------------------------
         # SUBPASO D: SUPERVISOR DE CALIDAD Y REFLECTION GATE ("Agent-in-the-Middle")
