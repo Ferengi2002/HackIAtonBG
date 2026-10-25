@@ -39,6 +39,8 @@ wheels/
 .pytest_cache/
 .coverage
 htmlcov/
+test-results.xml
+coverage.xml
 
 # 4. Entornos virtuales
 venv/

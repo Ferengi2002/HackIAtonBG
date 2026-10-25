@@ -124,6 +124,20 @@ HackatonBG/
 pip install -r requirements.txt
 ```
 
+### Pruebas unitarias para CI
+
+Las pruebas de `tests/` validan los guardrails sin credenciales de Azure ni cargar
+el modelo LightGBM. Los scripts de prueba manuales quedan fuera de la recolección
+automática configurada en `pytest.ini`.
+
+```bash
+python -m pip install pytest pytest-cov pydantic
+python -m pytest tests --junitxml=test-results.xml --cov=. --cov-report=xml
+```
+
+Azure Pipelines genera y publica `test-results.xml` en cada ejecución de pruebas,
+incluso si hay pruebas fallidas. Los reportes generados no se versionan en Git.
+
 ### 3. Configurar Variables de Entorno (`.env`)
 El proyecto está configurado para operar con el recurso unificado de Azure Cognitive Services / Foundry:
 ```ini
