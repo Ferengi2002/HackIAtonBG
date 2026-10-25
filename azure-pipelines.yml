@@ -1,8 +1,10 @@
-# Pipeline CI: construye la imagen Docker de ia-credit-bg y la publica en Azure Container Registry
+# CI/CD: validar, publicar imagen y crear/actualizar la API publica en Container Apps.
 # Requisitos:
 #   - Dockerfile en la raíz del repo (o ajustar dockerfilePath / buildContext)
 #   - Service connection (Azure Resource Manager): sc-azure-credit-bg-dev
 #   - Permiso del service principal sobre el ACR: rol AcrPush
+#   - Contributor en el grupo de destino y permisos RBAC para asignar AcrPull en ACR
+#   - Environment de Azure DevOps: credit-bg-dev (ver README)
 
 trigger:
   branches:
@@ -32,6 +34,8 @@ variables:
   buildContext: '$(Build.SourcesDirectory)'
   tag: '$(Build.BuildId)'
   pythonVersion: '3.11'
+  containerAppResourceGroup: 'rg-hackaton-grupo02'
+  containerAppDeploymentEnvironment: 'credit-bg-dev'
 
 stages:
   # ---------------------------------------------------------------
@@ -73,6 +77,25 @@ stages:
               failTaskOnFailedTests: true
               testRunTitle: 'ia-credit-bg'
 
+          - bash: |
+              set -euo pipefail
+              bash -n scripts/deploy-container-app.sh
+              python -m json.tool deploy/parameters/dev.json > /dev/null
+              az bicep install
+              mkdir -p "$(Build.ArtifactStagingDirectory)/container-app-template"
+              az bicep build \
+                --file deploy/container-app.bicep \
+                --outfile "$(Build.ArtifactStagingDirectory)/container-app-template/template.json"
+              cp deploy/parameters/dev.json "$(Build.ArtifactStagingDirectory)/container-app-template/dev.parameters.json"
+              cp scripts/deploy-container-app.sh "$(Build.ArtifactStagingDirectory)/container-app-template/deploy.sh"
+            displayName: Validar y compilar despliegue de Container Apps
+
+          - task: PublishPipelineArtifact@1
+            displayName: Publicar manifiesto validado de Container Apps
+            inputs:
+              targetPath: '$(Build.ArtifactStagingDirectory)/container-app-template'
+              artifact: container-app-template
+
   # ---------------------------------------------------------------
   # 2. Build de la imagen y push al ACR (no se ejecuta en PR)
   # ---------------------------------------------------------------
@@ -85,6 +108,7 @@ stages:
         displayName: Construir y publicar imagen
         steps:
           - task: AzureCLI@2
+            name: setImage
             displayName: 'Login en ACR, build y push'
             inputs:
               azureSubscription: '$(azureServiceConnection)'
@@ -108,9 +132,70 @@ stages:
                 docker push $IMAGE:$(tag)
                 docker push $IMAGE:latest
 
-                echo "Imagen publicada: $IMAGE:$(tag)"
+                DIGEST=$(az acr repository show \
+                  --name "$(acrName)" --image "$(imageRepository):$(tag)" \
+                  --query digest --output tsv)
+                [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+                echo "##vso[task.setvariable variable=imageFullName;isOutput=true]$IMAGE@$DIGEST"
+                echo "Imagen publicada: $IMAGE@$DIGEST"
 
-          - script: |
-              echo "##vso[task.setvariable variable=imageFullName;isOutput=true]$(acrLoginServer)/$(imageRepository):$(tag)"
-            name: setImage
-            displayName: Exponer nombre de la imagen
+  # ---------------------------------------------------------------
+  # 3. Crear/actualizar Container Apps: solo main y con la imagen de esta ejecucion
+  # ---------------------------------------------------------------
+  - stage: CreateContainerApp
+    displayName: Crear y desplegar Container App (dev)
+    dependsOn: BuildAndPush
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'), ne(variables['Build.Reason'], 'PullRequest'))
+    lockBehavior: runLatest
+    variables:
+      containerImage: $[ stageDependencies.BuildAndPush.Docker.outputs['setImage.imageFullName'] ]
+    jobs:
+      - deployment: DeployContainerApp
+        displayName: Desplegar API publica en Azure Container Apps
+        environment: $(containerAppDeploymentEnvironment)
+        timeoutInMinutes: 60
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: none
+                - download: none
+
+                - task: DownloadPipelineArtifact@2
+                  displayName: Descargar manifiesto validado de esta ejecucion
+                  inputs:
+                    buildType: current
+                    artifactName: container-app-template
+                    targetPath: '$(Pipeline.Workspace)/container-app-template'
+
+                - bash: mkdir -p "$(Pipeline.Workspace)/container-app-deployment"
+                  displayName: Preparar evidencias del despliegue
+
+                - task: AzureCLI@2
+                  name: deployApi
+                  displayName: Validar, crear y comprobar Container App
+                  inputs:
+                    azureSubscription: '$(azureServiceConnection)'
+                    visibleAzLogin: false
+                    scriptType: bash
+                    scriptLocation: scriptPath
+                    scriptPath: '$(Pipeline.Workspace)/container-app-template/deploy.sh'
+                    workingDirectory: '$(Pipeline.Workspace)/container-app-template'
+                  env:
+                    AZURE_CORE_ONLY_SHOW_ERRORS: 'true'
+                    RESOURCE_GROUP: $(containerAppResourceGroup)
+                    ACR_NAME: $(acrName)
+                    IMAGE_REPOSITORY: $(imageRepository)
+                    CONTAINER_IMAGE: $(containerImage)
+                    REVISION_SUFFIX: b$(Build.BuildId)-a$(System.JobAttempt)
+                    DEPLOYMENT_NAME: ia-credit-bg-$(Build.BuildId)-$(System.JobAttempt)
+                    TEMPLATE_FILE: '$(Pipeline.Workspace)/container-app-template/template.json'
+                    PARAMETERS_FILE: '$(Pipeline.Workspace)/container-app-template/dev.parameters.json'
+                    DEPLOY_REPORT_DIR: '$(Pipeline.Workspace)/container-app-deployment'
+
+                - task: PublishPipelineArtifact@1
+                  displayName: Publicar evidencias y URL de Container App
+                  condition: succeededOrFailed()
+                  inputs:
+                    targetPath: '$(Pipeline.Workspace)/container-app-deployment'
+                    artifact: container-app-deployment-$(System.JobAttempt)

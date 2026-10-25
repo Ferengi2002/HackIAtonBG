@@ -176,6 +176,67 @@ Para habilitar Azure, agrega `--env-file .env` antes del nombre de la imagen en
 `.env` y otros secretos quedan excluidos del contexto de construcción.
 El pipeline utiliza este `Dockerfile` desde la raíz para construir y publicar en ACR.
 
+### Despliegue en Azure Container Apps desde el pipeline
+
+`azure-pipelines.yml` ejecuta `Validate -> BuildAndPush -> CreateContainerApp`.
+Las validaciones de Bash, JSON, Bicep y las pruebas Python se ejecutan en Azure
+Pipelines. El último stage se ejecuta únicamente desde `main`, después de publicar
+la imagen, y nunca en un pull request ni desde `develop`.
+
+El despliegue usa el digest `sha256` de la imagen de esa misma ejecución, descarga
+el manifiesto compilado por `Validate` y crea o actualiza los recursos con Bicep
+en modo incremental. Antes de aplicar ejecuta ARM Validate y What-If. El grupo
+existente `rg-hackaton-grupo02`, ACR y la infraestructura Java de Terraform se
+conservan; Bicep administra los recursos adicionales de esta API.
+
+| Recurso/configuración | Valor inicial de dev |
+| --- | --- |
+| Container App | `ca-ia-credit-bg-dev` |
+| Entorno de Container Apps | `cae-credit-bg-dev` |
+| Identidad administrada | `id-ia-credit-bg-dev` |
+| Log Analytics | `law-ia-credit-bg-dev`, retención de 30 días |
+| Región | `eastus2` |
+| Acceso | Público, HTTPS, sin autenticación |
+| Contenedor | Puerto `8000`, 1 vCPU y 2 GiB de memoria |
+| Escalado Consumption | Entre 1 y 3 réplicas, concurrencia HTTP de 20 |
+| Azure DevOps Environment | `credit-bg-dev` |
+
+Los nombres, la región y el escalado se configuran en `deploy/parameters/dev.json`.
+El grupo de recursos y el Environment de Azure DevOps se configuran en las
+variables `containerAppResourceGroup` y `containerAppDeploymentEnvironment` del
+pipeline. La API y Swagger quedan disponibles sin token, según la configuración
+solicitada; el acceso privado a ACR usa la identidad administrada con `AcrPull`.
+
+Antes de la primera ejecución, preparar estos permisos y recursos en Azure:
+
+- Autorizar `sc-azure-credit-bg-dev` y el Environment `credit-bg-dev` para este
+  pipeline. Configurar un check **Exclusive lock** en el Environment para que
+  `lockBehavior: runLatest` evite despliegues concurrentes de la misma aplicación.
+- Conceder a la identidad de la service connection `Contributor` en el grupo de
+  destino, `AcrPush` en el ACR existente y permiso para crear asignaciones RBAC en
+  el ACR, por ejemplo `Role Based Access Control Administrator` limitado a ese
+  registro. `AcrPush` por sí solo no permite crear recursos ni asignar `AcrPull`.
+- Registrar los proveedores `Microsoft.App`, `Microsoft.OperationalInsights`,
+  `Microsoft.Insights` y `Microsoft.ManagedIdentity` en la suscripción. ACR debe
+  usar **RBAC Registry Permissions** y permitir ARM audience tokens. El pipeline
+  comprueba estas condiciones del registro sin cambiar sus políticas.
+
+Por defecto `keyVaultName` está vacío y la aplicación usa su fallback local para
+Foundry. Para habilitar las llamadas reales, configurar en `dev.json` un Key Vault
+existente con RBAC, su grupo y `openAiKeySecretName`; el secreto debe contener la
+clave de Foundry. El módulo concede a la identidad de la API `Key Vault Secrets
+User` en ese vault y utiliza una referencia al secreto, sin copiar su valor al
+YAML ni a los artefactos. La service connection también necesita permiso para
+crear esa asignación RBAC y leer los metadatos del vault. La aplicación reutiliza
+esa clave para Document Intelligence; revisar el endpoint y el deployment de
+Foundry en el mismo archivo de parámetros.
+
+Azure cambia el tráfico a la nueva revisión cuando supera las probes Startup,
+Readiness y Liveness de `/healthz`. El stage verifica la revisión y el digest,
+consulta `/healthz` y `/openapi.json` sin autenticación, y publica la URL en el
+resumen de la ejecución. El artefacto `container-app-deployment-<intento>` conserva
+el What-If, los outputs, la revisión y los resultados de esas comprobaciones.
+
 ### 5. Documentación Interactiva Swagger UI
 Abre en tu navegador:
 ```
