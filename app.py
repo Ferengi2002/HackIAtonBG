@@ -9,11 +9,13 @@ Endpoints:
 - GET  /docs                                   : Documentacion interactiva Swagger UI con ejemplos listos para 'Try it out'.
 """
 
+from __future__ import annotations
+
 from contextlib import asynccontextmanager
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
