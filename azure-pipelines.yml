@@ -1,0 +1,116 @@
+# Pipeline CI: construye la imagen Docker de ia-credit-bg y la publica en Azure Container Registry
+# Requisitos:
+#   - Dockerfile en la raíz del repo (o ajustar dockerfilePath / buildContext)
+#   - Service connection (Azure Resource Manager): sc-azure-credit-bg-dev
+#   - Permiso del service principal sobre el ACR: rol AcrPush
+
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+  paths:
+    exclude:
+      - README.md
+      - docs/*
+
+pr:
+  branches:
+    include:
+      - main
+      - develop
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  azureServiceConnection: 'sc-azure-credit-bg-dev'
+  acrName: 'cchackiatonbg'
+  acrLoginServer: 'cchackiatonbg.azurecr.io'
+  imageRepository: 'ia-credit-bg'
+  dockerfilePath: '$(Build.SourcesDirectory)/Dockerfile'
+  buildContext: '$(Build.SourcesDirectory)'
+  tag: '$(Build.BuildId)'
+  pythonVersion: '3.11'
+
+stages:
+  # ---------------------------------------------------------------
+  # 1. Validación: dependencias, lint y pruebas
+  # ---------------------------------------------------------------
+  - stage: Validate
+    displayName: Validar código
+    jobs:
+      - job: Test
+        displayName: Lint y pruebas
+        steps:
+          - task: UsePythonVersion@0
+            displayName: 'Usar Python $(pythonVersion)'
+            inputs:
+              versionSpec: '$(pythonVersion)'
+
+          - script: |
+              python -m pip install --upgrade pip
+              if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+              pip install ruff pytest pytest-cov
+            displayName: Instalar dependencias
+
+          - script: ruff check .
+            displayName: Lint (ruff)
+            continueOnError: true   # quitar cuando el código esté limpio
+
+          - script: |
+              if [ -d tests ]; then
+                pytest --junitxml=test-results.xml --cov=. --cov-report=xml
+              else
+                echo "No existe carpeta tests, se omite pytest"
+              fi
+            displayName: Pruebas unitarias
+
+          - task: PublishTestResults@2
+            displayName: Publicar resultados de pruebas
+            condition: and(succeededOrFailed(), exists('test-results.xml'))
+            inputs:
+              testResultsFiles: 'test-results.xml'
+              testRunTitle: 'ia-credit-bg'
+
+  # ---------------------------------------------------------------
+  # 2. Build de la imagen y push al ACR (no se ejecuta en PR)
+  # ---------------------------------------------------------------
+  - stage: BuildAndPush
+    displayName: Build y push a ACR
+    dependsOn: Validate
+    condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+    jobs:
+      - job: Docker
+        displayName: Construir y publicar imagen
+        steps:
+          - task: AzureCLI@2
+            displayName: 'Login en ACR, build y push'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+
+                az acr login --name $(acrName)
+
+                IMAGE=$(acrLoginServer)/$(imageRepository)
+
+                docker build \
+                  --file $(dockerfilePath) \
+                  --tag $IMAGE:$(tag) \
+                  --tag $IMAGE:latest \
+                  --label org.opencontainers.image.revision=$(Build.SourceVersion) \
+                  --label org.opencontainers.image.source=$(Build.Repository.Uri) \
+                  $(buildContext)
+
+                docker push $IMAGE:$(tag)
+                docker push $IMAGE:latest
+
+                echo "Imagen publicada: $IMAGE:$(tag)"
+
+          - script: |
+              echo "##vso[task.setvariable variable=imageFullName;isOutput=true]$(acrLoginServer)/$(imageRepository):$(tag)"
+            name: setImage
+            displayName: Exponer nombre de la imagen
