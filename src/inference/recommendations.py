@@ -3,7 +3,7 @@ Motor de Recomendación de Productos y Asesoría Patrimonial de Banco Guayaquil
 Genera ofertas hiper-personalizadas y asesoría patrimonial por tiers de liquidez:
 - TIER ALTO (Patrimonial / Alta Liquidez): Póliza a Plazo Fijo (7.00% - 7.50%, COSEDE hasta $32,000).
 - TIER MEDIO (Moderado / Balanceado): Estrategia Híbrida (Póliza Corto Plazo + Ahorro Programado en Metas).
-- TIER BÁSICO (Crecimiento / Microahorro): Ahorro Flexible Programado (Fondo de Emergencia en MAESTRO_METAS).
+- TIER BÁSICO (Crecimiento / Microahorro): Ahorro Flexible Programado (Fondo de Emergencia en Metas de Ahorro).
 - DEUDA CARA PREEXISTENTE: Sugerencia de prepago de TC (~16% anual) para maximizar ahorro neto.
 Ofrece valor mutuo ganar-ganar: rentabilidad y seguridad para el cliente, captación y menor mora para Banco Guayaquil.
 """
@@ -95,9 +95,9 @@ class RecommendationEngine:
 
             estrategia = (
                 f"Estrategia balanceada: Rentabilizar ${monto_poliza:,.0f} a corto plazo ({plazo_dias} días al {tasa_poliza:.2f}%) "
-                f"y programar un Ahorro Flexible de ${meta_ahorro_complemento:,.0f}/mes en MAESTRO_METAS para cubrir gastos futuros."
+                f"y programar un Ahorro Flexible de ${meta_ahorro_complemento:,.0f}/mes en Metas de Ahorro para cubrir gastos futuros."
                 if monto_poliza >= 300.0
-                else f"Fortalecer tu liquidez con Ahorro Programado en MAESTRO_METAS de ${meta_ahorro_complemento:,.0f}/mes."
+                else f"Fortalecer tu liquidez con Ahorro Programado en Metas de Ahorro de ${meta_ahorro_complemento:,.0f}/mes."
             )
             motivo_poliza = (
                 f"Tienes ${saldo_cuentas:,.2f} en ahorros. Colocar ${monto_poliza:,.0f} al {tasa_poliza:.2f}% te genera intereses "
@@ -126,7 +126,7 @@ class RecommendationEngine:
             meta_ahorro_complemento = round(max(30.0, min(60.0, max(30.0, flujo_neto * 0.25 if flujo_neto > 0 else 30.0))), -1)
 
             estrategia = (
-                f"Construir tu Fondo de Emergencia con Ahorro Flexible en MAESTRO_METAS debitando ${meta_ahorro_complemento:,.0f}/mes "
+                f"Construir tu Fondo de Emergencia con Ahorro Flexible en Metas de Ahorro debitando ${meta_ahorro_complemento:,.0f}/mes "
                 f"en quincena o fin de mes, sin comisiones ni penalidades."
             )
             motivo_poliza = "Tu prioridad hoy es armar un fondo de reserva antes de inmovilizar dinero a plazo fijo."

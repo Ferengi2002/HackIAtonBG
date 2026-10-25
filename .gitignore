@@ -71,3 +71,29 @@ Thumbs.db
 ehthumbs.db
 [Dd]esktop.ini
 $RECYCLE.BIN/
+
+# 9. Presentaciones y Assets de Diapositivas (PowerPoint / Pitch)
+*.pptx
+*.ppt
+*.ppsx
+*.pps
+presentation_assets/
+scripts/*presentation*.py
+scripts/*pitch*.py
+scripts/*slide*.py
+scripts/*inspect*.py
+scripts/*icon*.py
+scripts/*emf*.py
+scripts/*badge*.py
+scripts/*color*.py
+scripts/check_image*.py
+scripts/get_azure_logo.py
+scripts/build_diagram_deck.py
+scripts/map_slide_media.py
+
+# 10. Archivos temporales y basura del sistema
+*.tmp
+*.temp
+*.bak
+*.orig
+.cache/

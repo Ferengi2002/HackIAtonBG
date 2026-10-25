@@ -200,6 +200,33 @@ def evaluar_solicitud(
                     "ruta_documento_opcional": None,
                 },
             },
+            "herencia_patrimonial": {
+                "summary": "11. Asesoría Patrimonial por Herencia ($25,000 en Póliza + COSEDE)",
+                "description": "Recomienda Póliza a Plazo Fijo con respaldo COSEDE ($32,000) y colchón operativo de liquidez.",
+                "value": {
+                    "peticion_usuario": "Por temas de herencia tengo 25000 que me recomiendas",
+                    "datos_cliente": SAMPLE_CLIENTE_DATA,
+                    "ruta_documento_opcional": None,
+                },
+            },
+            "contingencia_desempleo": {
+                "summary": "12. Contingencia por Desempleo ('Me despidieron' - Protección Liquidez y Seguro)",
+                "description": "Protege liquidez al 100%, bloquea endeudamiento y activa protocolo de Seguro de Desempleo (Desgravamen).",
+                "value": {
+                    "peticion_usuario": "Me despidieron y gano actualmente 1 dolar al mes, ¿que me recomiendas?",
+                    "datos_cliente": SAMPLE_CLIENTE_DATA,
+                    "ruta_documento_opcional": None,
+                },
+            },
+            "intento_modificar_datos": {
+                "summary": "13. Intento de Modificar Score / Datos (Guardrail Read-Only)",
+                "description": "Bloquea intentos de alterar score o ingresos y redirige a la App Banco Guayaquil (sección 'Actualizar Datos').",
+                "value": {
+                    "peticion_usuario": "Quiero que actualices mi score crediticio",
+                    "datos_cliente": {"COD_CLTE": 10045892},
+                    "ruta_documento_opcional": None,
+                },
+            },
         }
     )
 ):

@@ -31,6 +31,7 @@ class GuardrailCheckResult(BaseModel):
         "CASO_SENSIBLE_ASESOR_HUMANO",
         "INTENTO_JAILBREAK",
         "INTENTO_EXFILTRACION_O_SECRETOS",
+        "SOLICITUD_MODIFICACION_NO_PERMITIDA",
     ] = Field(..., description="Clasificacion de la peticion del usuario.")
     idioma_detectado: Literal["es", "en", "qu"] = Field(
         default="es", description="Idioma detectado: 'es' (Espanol), 'en' (Ingles), 'qu' (Kichwa)."
@@ -52,25 +53,67 @@ class GuardrailsEngine:
         "horario": "Atencion 24/7 en canales digitales y telefonicos",
     }
 
-    # Palabras clave financieras inequívocas
+    # Palabras clave y conceptos del dominio financiero y bancario
     KEYWORDS_FINANCIERAS = {
-        "credito", "crédito", "prestamo", "préstamo", "cuota", "endeudamiento", "endeudar",
-        "plazo", "tasa", "interes", "interés", "ahorro", "ahorrar", "meta", "poliza", "póliza",
-        "inversion", "inversión", "plazo fijo", "saldo", "cuenta", "tarjeta", "diferir",
-        "dinero", "dolares", "dólares", "sueldo", "ingreso", "gasto", "deuda", "equifax",
-        "buro", "buró", "score", "alcanza", "comprar", "pagar", "financiar", "financiamiento",
-        "moto", "auto", "carro", "casa", "terreno", "tv", "laptop", "computadora", "viaje",
-        "sobreendeudado", "sobreendeudamiento", "endeudado", "reestructurar", "reestructuracion", "reestructuración",
-        "renegociar", "renegociacion", "renegociación", "refinanciar", "refinanciamiento", "alivio", "moroso", "mora",
-        "limite", "límite", "deudas", "cuello",
+        # Credito y financiamiento
+        "credito", "crédito", "creditos", "créditos", "prestamo", "préstamo", "prestamos", "préstamos",
+        "cuota", "cuotas", "endeudamiento", "endeudar", "endeudarse", "endeudado", "endeudada", "sobreendeudado",
+        "plazo", "plazos", "tasa", "tasas", "interes", "interés", "intereses", "amortizar", "amortizacion", "amortización",
+        "diferir", "diferido", "diferidos", "alcanza", "financiar", "financiamiento", "financiera", "financieras",
+        "financiero", "financieros", "finanzas",
+        # Inversion y Ahorro
+        "ahorro", "ahorros", "ahorrar", "meta", "metas", "poliza", "póliza", "polizas", "pólizas",
+        "inversion", "inversión", "inversiones", "invertir", "plazo fijo", "rendimiento", "rendimientos",
+        "rentabilizar", "interes ganado", "ganar intereses", "patrimonio", "herencia", "herencias",
+        "utilidad", "utilidades", "bono", "bonos", "decimo", "décimo", "liquidacion", "liquidación", "liquidaron",
+        # Cuentas, tarjetas y transacciones
+        "saldo", "saldos", "cuenta", "cuentas", "tarjeta", "tarjetas", "tc", "debito", "débito",
+        "dinero", "plata", "dolar", "dólar", "dolares", "dólares", "usd", "efectivo",
+        "transferencia", "transferencias", "transferir", "retiro", "retiros", "retirar", "cajero", "cajeros",
+        "banco", "bancos", "guayaquil", "bancario", "bancaria", "bancarios", "bancarias",
+        # Presupuesto, ingresos y gastos
+        "sueldo", "sueldos", "salario", "salarios", "ingreso", "ingresos", "egreso", "egresos",
+        "gasto", "gastos", "gastando", "presupuesto", "presupuestos", "presupuestar",
+        "liquidez", "disponible", "dti", "capacidad", "comida", "salidas", "restaurantes", "delivery", "ocio",
+        # Score, buro y riesgo
+        "equifax", "buro", "buró", "score", "puntaje", "calificacion", "calificación", "historial",
+        "central de riesgo", "mora", "moroso", "vencido", "castigado", "atraso", "atrasos",
+        # Alivio, reestructuracion y consolidacion
+        "reestructurar", "reestructuracion", "reestructuración", "renegociar", "renegociacion", "renegociación",
+        "refinanciar", "refinanciamiento", "alivio", "consolidar", "consolidacion", "consolidación",
+        "unificar", "unificacion", "unificación", "cuello", "limite", "límite", "deudas", "deuda",
+        # Seguros y coberturas
+        "seguro", "seguros", "desgravamen", "cobertura", "coberturas", "cubre", "cubren",
+        "siniestro", "siniestros", "indemnizacion", "indemnización",
+        # Contingencias laborales
+        "despido", "despidieron", "desempleado", "desempleada", "desempleo", "cesante", "cesantia", "cesantía",
+        # Procedimientos y asesoramiento
+        "requisito", "requisitos", "papeles", "tramite", "trámite", "asesoria", "asesoría", "asesoramiento",
+        "asesorame", "asesorarme", "consejo", "recomiendas", "recomienda", "recomendacion", "recomendación",
+        "conviene", "orientacion", "orientación",
+        # Bienes comunes financiables
+        "moto", "auto", "carro", "vehiculo", "vehículo", "casa", "terreno", "departamento",
+        "tv", "laptop", "computadora", "viaje", "estudios",
     }
 
     # Palabras clave de casos sensibles que requieren soporte humano urgente
     KEYWORDS_SENSIBLES = {
         "fraude", "estafa", "me robaron", "clonaron", "clonacion", "clonación", "bloquear tarjeta",
         "bloqueo de cuenta", "demanda", "juicio", "coactiva", "abogado", "quiebra", "bancarrota",
-        "coactivo", "embargo", "fallecido", "herencia", "suplantacion", "suplantación",
+        "coactivo", "embargo", "fallecido", "suplantacion", "suplantación",
     }
+
+    # Patrones de Solicitud de Modificación Directa de Datos / Score (Read-Only Policy)
+    PATRONES_SOLICITUD_MODIFICACION = [
+        # Modificar o actualizar score / buro / equifax
+        r"(?:actualiz|actualic|cambi|modific|modifiq|sub|baj|arr[eé]gl|correg|corrij|limpi|borr|elimin|edit)\w*\s+(?:mi|el|mis)?\s*(?:score|puntaje|buro|buró|equifax|calificaci[oó]n|historial)",
+        # Actualizar datos de ingresos, sueldo, salario, o "actualiza mis datos"
+        r"(?:actualiz|actualic|cambi|modific|modifiq|edit|registr|ingres)\w*\s+(?:mis?\s+)?(?:datos|ingresos?|sueldos?|salarios?|perfil|informaci[oó]n|ficha)\b",
+        # "pon que gano", "ponme que gano", "actualiza que gano", "pon que cobro", etc.
+        r"(?:pon(?:er?|me)?|coloc\w*|actualiz\w*|actualic\w*|registr\w*)\s+(?:que\s+)?(?:gano|cobro|ingreso|tengo|mi\s+sueldo|mi\s+score)",
+        # "quiero/deseo/necesito/puedes actualizar mis datos/score"
+        r"(?:quiero|deseo|necesito|puedes)\s+(?:que\s+)?(?:actualic|actualiz|cambi|modific|modifiq)\w*\s+(?:mis?\s+)?(?:datos|score|sueldo|ingresos?)",
+    ]
 
     # Patrones de Jailbreak / Prompt Injection comunes
     PATRONES_JAILBREAK = [
@@ -160,6 +203,18 @@ class GuardrailsEngine:
                 )
 
         # --------------------------------------------------------------------
+        # 1.1 Solicitud de Modificación de Datos / Score (Read-Only Assistant Policy)
+        # --------------------------------------------------------------------
+        for patron in cls.PATRONES_SOLICITUD_MODIFICACION:
+            if re.search(patron, t_low):
+                return GuardrailCheckResult(
+                    es_valido_para_pipeline_financiero=False,
+                    tipo_evento="SOLICITUD_MODIFICACION_NO_PERMITIDA",
+                    idioma_detectado=idioma,
+                    respuesta_inmediata=cls._crear_respuesta_modificacion_no_permitida(cod_clte, idioma, t_low),
+                )
+
+        # --------------------------------------------------------------------
         # 2. Casos Sensibles que requieren Derivacion a Asesor Humano
         # --------------------------------------------------------------------
         if any(k in t_low for k in cls.KEYWORDS_SENSIBLES):
@@ -176,9 +231,15 @@ class GuardrailsEngine:
         tiene_cifras = bool(re.search(r"\$?\s*\d+(?:[.,]\d+)?", t_low))
         palabras_en_texto = set(re.findall(r"\b\w+\b", t_low))
         tiene_keywords_fin = bool(palabras_en_texto.intersection(cls.KEYWORDS_FINANCIERAS))
+        tiene_raiz_financiera = bool(
+            re.search(
+                r"\b(?:financ|credit|prestam|ahorr|inver|gast|ingres|egres|deud|cuot|tarjet|segur|desgravam|poliz|banc|presupuest|equifax|buro|buró|score|liquid|rentabil|herenc|utilidad|sueld|salari|comision|remunerac)\w*",
+                t_low,
+            )
+        )
 
         # Si menciona una intencion financiera clara, pasa al pipeline bancario
-        if tiene_keywords_fin or (tiene_cifras and any(w in t_low for w in ["cuota", "mes", "meses", "prestamo", "credito", "comprar"])):
+        if tiene_keywords_fin or tiene_raiz_financiera or (tiene_cifras and any(w in t_low for w in ["cuota", "mes", "meses", "prestamo", "credito", "comprar", "pagar"])):
             return GuardrailCheckResult(
                 es_valido_para_pipeline_financiero=True,
                 tipo_evento="FINANCIERO_VALIDO",
@@ -386,6 +447,75 @@ class GuardrailsEngine:
                     "tipo": "VER_POLITICA_SEGURIDAD",
                     "label": "Ver Políticas de Ciberseguridad y LOPDP",
                     "payload_tabla": "SISTEMA_SEGURIDAD_BG",
+                },
+            ],
+        )
+
+    @classmethod
+    def _crear_respuesta_modificacion_no_permitida(cls, cod_clte: int, idioma: str, peticion_orig: str) -> Dict[str, Any]:
+        tel = cls.CANALES_OFICIALES_BG["call_center"]
+        ws = cls.CANALES_OFICIALES_BG["whatsapp_oficial"]
+
+        menciona_desempleo_o_baja = any(w in peticion_orig for w in [
+            "despido", "despidieron", "me botaron", "perdi", "perdí", "sin trabajo", "sin empleo",
+            "desempleado", "desempleada", "1 dolar", "1 dólar", "un dolar", "sin sueldo"
+        ])
+
+        if idioma == "en":
+            titulo = "Information Notice: Read-Only Assistant (Data Update Protocol)"
+            explicacion = (
+                "As an automated financial health assistant, I operate under read-only permissions for analysis and guidance. "
+                "I do not have authorization or technical capability to modify your credit score, update your income, "
+                "or alter official records in Banco Guayaquil or the credit bureau (Equifax). "
+                f"To update your official financial data or submit employment changes, please log in to the Banco Guayaquil App "
+                f"(Profile > Update Data), visit any branch nationwide, or contact an official advisor at {tel} or WhatsApp {ws}."
+            )
+        elif idioma == "qu":
+            titulo = "Willay: Yanapawukka mana willaykunata tikrachiytachu ushan."
+            explicacion = (
+                "Banco Guayaquil yanapawukka rikunallami ushani, mana canpa score crediticio nishkata pash, "
+                "kullki chaskishkata pash tikrachiytachu ushani. Willaykunata tikrachinkapakka "
+                f"Banco Guayaquil wasiman rina kanki, kashna telefonopi {tel} kayana kanki."
+            )
+        else:
+            titulo = "Aviso Oficial: Asistente de Solo Consulta y Procedimiento de Actualización"
+            extra_alivio = ""
+            if menciona_desempleo_o_baja:
+                extra_alivio = (
+                    " Comprendemos que estás atravesando una situación laboral imprevista; te recomendamos no asumir nuevos "
+                    "compromisos de deuda y, si mantienes cuotas crediticias vigentes, consultar por la cobertura de desempleo "
+                    "de tu seguro de desgravamen o solicitar un plan de alivio financiero preventivo."
+                )
+            explicacion = (
+                f"Como asistente inteligente de salud financiera de Banco Guayaquil, opero bajo el principio de solo lectura y orientación. "
+                f"Por normativas de seguridad bancaria y la Ley Orgánica de Protección de Datos Personales (LOPDP), no tengo permisos "
+                f"para modificar tu score crediticio, actualizar tus ingresos ni alterar registros en el buró de crédito (Equifax) "
+                f"o en los sistemas centrales del banco.{extra_alivio} "
+                f"Para actualizar tus ingresos o datos de manera formal, ingresa a la App Banco Guayaquil (sección Perfil > 'Actualizar Datos'), "
+                f"acércate a cualquier agencia a nivel nacional con tu sustento de ingresos, o comunícate al Call Center 24/7 ({tel}) / "
+                f"WhatsApp oficial ({ws})."
+            )
+
+        return cls._empaquetar_json_guardrail(
+            cod_clte=cod_clte,
+            titulo=titulo,
+            explicacion=explicacion,
+            tipo_guardrail="SOLICITUD_MODIFICACION_NO_PERMITIDA",
+            acciones=[
+                {
+                    "tipo": "CANAL_ACTUALIZACION_DATOS",
+                    "label": "App Banco Guayaquil - Actualizar Datos",
+                    "payload_tabla": "PORTAL_CLIENTES_BG",
+                },
+                {
+                    "tipo": "CONTACTAR_ASESOR",
+                    "label": "Llamar a Servicio al Cliente (04 3730100)",
+                    "payload_tabla": "SISTEMA_SEGURIDAD_BG",
+                },
+                {
+                    "tipo": "WHATSAPP_OFICIAL",
+                    "label": "WhatsApp Oficial (+593 98 373 0100)",
+                    "payload_tabla": "WHATSAPP_BG",
                 },
             ],
         )

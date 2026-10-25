@@ -32,6 +32,16 @@ from src.inference.guardrails import GuardrailsEngine
             "INTENTO_EXFILTRACION_O_SECRETOS",
             "SEGURIDAD_EXFILTRACION_BLOQUEADA",
         ),
+        (
+            "Quiero que actualices mi score crediticio",
+            "SOLICITUD_MODIFICACION_NO_PERMITIDA",
+            "SOLICITUD_MODIFICACION_NO_PERMITIDA",
+        ),
+        (
+            "Actualiza mis datos que gano ahorita 1 dolar al mes",
+            "SOLICITUD_MODIFICACION_NO_PERMITIDA",
+            "SOLICITUD_MODIFICACION_NO_PERMITIDA",
+        ),
     ],
 )
 def test_peticion_filtrada_responde_sin_pipeline_financiero(peticion, evento, motivo):
@@ -59,6 +69,16 @@ def test_peticion_filtrada_responde_sin_pipeline_financiero(peticion, evento, mo
         "Hola, quiero un credito de 2000 dolares a 24 meses",
         "Quiero una poliza para invertir mis ahorros",
         "Necesito reestructurar mis deudas",
+        "Por temas de herencia tengo 25000 que me recomiendas",
+        "Me despidieron y gano actualemnte 1 dolar al mes, que me recomiendas?",
+        "Como estan mis finanzas generales hoy en Banco Guayaquil?",
+        "Que cubre el seguro de desgravamen en mis creditos?",
+        "En que se me esta yendo el dinero este mes?",
+        "Como puedo mejorar mi score crediticio?",
+        "Me conviene pagar la tarjeta de credito o abrir una poliza?",
+        "Puedo consolidar mis deudas de otros bancos?",
+        "Cuales son los requisitos para un credito de consumo?",
+        "Cuanto puedo retirar en cajero automatico al dia?",
     ],
 )
 def test_consulta_financiera_continua_al_pipeline(peticion):

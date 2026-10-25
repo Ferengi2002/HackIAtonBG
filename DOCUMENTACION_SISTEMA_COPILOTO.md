@@ -186,9 +186,12 @@ El equipo de Backend (Spring Boot) extrae de la base de datos relacional (Postgr
 #### ¿Qué hace?
 Antes de procesar la solicitud con modelos costosos, evalúa el texto mediante filtros regex de alta velocidad:
 1. **Filtro Anti-Exfiltración de Secretos (OWASP LLM02):** Si el mensaje contiene patrones buscando credenciales, variables del archivo `.env`, llaves de Azure, código fuente (`app.py`, `motor_ia_foundry.py`) o datos de otros usuarios (Anti-IDOR / LOPDP), el sistema bloquea la petición inmediatamente con el evento `SEGURIDAD_EXFILTRACION_BLOQUEADA`.
-2. **Filtro de Saludos y Cortesía:** Si el usuario solo dice *"Hola"*, *"Buenos días"* o *"Cómo estás"*, responde un saludo amigable invitándolo a consultar su capacidad financiera, sin invocar LLMs ni modelos ML.
-3. **Filtro Fuera de Dominio:** Si el usuario pregunta trivia (*"¿Cuál es la capital de Francia?"*) o temas absurdos (*"dónde ocultar un pollo de 60kg"*), rechaza cortésmente la consulta indicando que solo atiende salud financiera.
-4. **Filtro de Fraude y Emergencia:** Si detecta palabras como *"me clonaron la tarjeta"*, *"fraude"* o *"me robaron"*, no calcula créditos y deriva de inmediato al Call Center oficial de Banco Guayaquil (**04 3730100**).
+2. **Filtro de Integridad de Datos / Read-Only Policy (`SOLICITUD_MODIFICACION_NO_PERMITIDA`):** Si el usuario solicita al asistente actualizar, modificar o arreglar su score crediticio (*"actualiza mi score crediticio"*, *"cambia mi buró"*), o alterar sus datos maestros e ingresos (*"actualiza mis datos que gano ahorita 1 dólar al mes"*, *"modifica mi sueldo"*), el copiloto responde de inmediato aclarando su naturaleza de solo consulta y orientación, indicando los canales oficiales del banco (App Banco Guayaquil > Perfil > Actualizar Datos, agencias presenciales, Call Center 04 3730100 o WhatsApp oficial) y brindando asesoría preventiva ante contingencias de ingresos.
+3. **Filtro de Saludos y Cortesía:** Si el usuario solo dice *"Hola"*, *"Buenos días"* o *"Cómo estás"*, responde un saludo amigable invitándolo a consultar su capacidad financiera, sin invocar LLMs ni modelos ML.
+4. **Filtro Fuera de Dominio:** Si el usuario pregunta trivia (*"¿Cuál es la capital de Francia?"*) o temas absurdos (*"dónde ocultar un pollo de 60kg"*), rechaza cortésmente la consulta indicando que solo atiende salud financiera.
+5. **Filtro de Fraude y Emergencia:** Si detecta palabras como *"me clonaron la tarjeta"*, *"fraude"* o *"me robaron"*, no calcula créditos y deriva de inmediato al Call Center oficial de Banco Guayaquil (**04 3730100**).
+6. **Consultas Patrimoniales por Herencia e Inversión:** Las consultas sobre herencias o ahorros (*"Por temas de herencia tengo 25000 qué me recomiendas"*) entran directamente al pipeline financiero como asesoría patrimonial de alta gama (`INVERSION`), recomendando Pólizas a Plazo Fijo con respaldo COSEDE (hasta \$32,000) y colchón operativo.
+7. **Protocolo de Contingencia por Desempleo:** Ante consultas de pérdida laboral (*"Me despidieron y gano 1 dólar al mes"*), el copiloto prioriza la protección de liquidez (bloqueando nuevo endeudamiento), preserva los ahorros disponibles para subsistencia y activa el protocolo para invocar la cobertura de desempleo del Seguro de Desgravamen o solicitar periodos de gracia.
 
 ---
 
@@ -208,17 +211,23 @@ Antes de procesar la solicitud con modelos costosos, evalúa el texto mediante f
 
 ---
 
-### 5.3. Comprensión de Lenguaje Natural (NLU)
+### 5.3. Comprensión de Lenguaje Natural (NLU) y Taxonomía de Consultas
 - **Ubicación:** [`motor_ia_foundry.py`](file:///c:/Users/ACER/Desktop/HackatonBG/motor_ia_foundry.py) (Subpaso A)
 
 #### ¿Cómo funciona?
-1. Se envía un prompt ultracompacto a `gpt-4o` en Azure AI Foundry solicitando extraer en JSON:
-   `{ "intencion", "monto_solicitado", "plazo_meses", "cuota_mensual_nueva", "en_estres_financiero" }`.
-2. Si el usuario escribe *"Quiero una moto de $2,500 a 24 meses"*, el NLU extrae `monto = 2500` y `plazo = 24`.
-3. Si el usuario escribió el monto pero no la cuota, el sistema calcula automáticamente la cuota fija mensual mediante el **Sistema de Amortización Francés** usando la tasa referencial legal del 15.5% anual:
-   $$\text{Cuota} = M \times \frac{r(1+r)^n}{(1+r)^n - 1}$$
-   *(Donde $M$ es el monto, $n$ el plazo en meses, y $r = \frac{0.155}{12}$ la tasa mensual)*.
-4. Si el usuario expresa angustia (*"ando sobre endeudado y no puedo más"*), el NLU clasifica la intención como `REESTRUCTURACION_DEUDA` y activa la bandera `en_estres_financiero = True`.
+1. Se envía un prompt estructurado a `gpt-4o` en Azure AI Foundry (o se ejecuta el extractor determinista local de respaldo de alta fidelidad) solicitando extraer en JSON:
+   `{ "intencion", "subtipo_consulta", "es_solicitud_deuda_nueva", "monto_solicitado", "plazo_meses", "cuota_mensual_nueva", "en_estres_financiero", "es_desempleo_o_perdida_ingreso" }`.
+2. **Taxonomía Integral de Intenciones del Cliente:**
+   - **`ENDEUDAMIENTO` (`es_solicitud_deuda_nueva = True`):** Solicitud expresa de créditos para compras (motos, autos, laptops, electrodomésticos, viajes o libre consumo). Se calcula la cuota mediante amortización francesa al 15.5% referencial y se evalúa el riesgo de mora con LightGBM.
+   - **`DIAGNOSTICO_FINANCIERO` (`es_solicitud_deuda_nueva = False`):** Consultas sobre estado financiero general (*"¿Cómo están mis finanzas hoy?"*, *"¿En qué se me va el dinero?"*). Entrega un balance con flujo libre real, DTI, saldo en cuentas y gastos detectados en restaurantes/apps.
+   - **`EDUCACION_SCORE` (`es_solicitud_deuda_nueva = False`):** Explicación pedagógica del score Equifax del cliente ({score_equifax} puntos). Detalla los dos factores con mayor ponderación: puntualidad en pagos (35%) y uso de cupo de tarjetas por debajo del 50% (30%).
+   - **`SEGUROS_Y_COBERTURAS` (`es_solicitud_deuda_nueva = False`):** Explicación del Seguro de Desgravamen (liquidación del saldo insoluto ante fallecimiento o incapacidad total permanente, más cobertura de desempleo involuntario hasta por 6 cuotas para dependientes).
+   - **`COMPARATIVA_FINANCIERA` (`es_solicitud_deuda_nueva = False`):** Análisis matemático objetivo entre pagar tarjeta de crédito (~16.06% anual) vs abrir póliza (6.5% - 7.75% anual), demostrando el mayor rendimiento financiero al desendeudarse de pasivos caros.
+   - **`CONSOLIDACION_DEUDAS` (`es_solicitud_deuda_nueva = False`):** Propuesta de unificación de deudas dispersas a tasa preferencial (14.20% anual) para reducir la cuota mensual hasta en un 35%.
+   - **`CONSULTA_PROCEDIMENTAL` (`es_solicitud_deuda_nueva = False`):** Información factual de límites operativos oficiales (retiro en cajero automático hasta $500/día, transferencias gratuitas directas por App Banco Guayaquil y requisitos de crédito).
+   - **`INVERSION` / `AHORRO` (`es_solicitud_deuda_nueva = False`):** Asesoría patrimonial para herencias, utilidades o ahorros con respaldo COSEDE (hasta $32,000).
+   - **`REESTRUCTURACION_DEUDA` (`es_solicitud_deuda_nueva = False`):** Protocolo de contingencia ante desempleo, pérdida drástica de ingresos o angustia por sobreendeudamiento crítico.
+3. **Garantía Anti-Distorsión de Crédito:** Si `es_solicitud_deuda_nueva = False`, el motor fija `cuota_nueva = $0.00` y NO genera simulaciones ficticias ni mensajes descontextualizados tipo *"la nueva cuota de $0.00 encaja holgadamente"*, focalizando la respuesta exclusivamente en la necesidad real planteada por el usuario.
 
 ---
 
@@ -334,6 +343,28 @@ El sistema fundamenta cada decisión con las normas vigentes en el ordenamiento 
    - Semáforo Amarillo: `[Tomar Crédito con Presupuesto]`, `[Ahorrar Entrada en Meta]`.
    - Semáforo Rojo: `[Programar Ahorro Meta]`, `[Recalcular Crédito Seguro]`.
    - Sobreendeudamiento Crítico: `[Llamar Asesor de Renegociación (04 3730100)]`, `[Negociar Deuda por WhatsApp]`, `[Solicitar Plan Alivio]`.
+
+---
+
+### 5.10. QualitySupervisorAgent: Auditoría de Calidad, Checklist de 5 Puntos y Reflection Gate ("Agent-in-the-Middle")
+- **Ubicación:** [`src/inference/quality_supervisor.py`](file:///c:/Users/ACER/Desktop/HackatonBG/src/inference/quality_supervisor.py) y [`motor_ia_foundry.py`](file:///c:/Users/ACER/Desktop/HackatonBG/motor_ia_foundry.py) (Subpaso D)
+- **Patrón Arquitectónico:** Multi-Agent Orchestrator con *Reflection & Quality Gate*.
+
+#### ¿Qué problema resuelve?
+Evita que nombres de tablas internas de base de datos (`MAESTRO_METAS`, `MAESTRO_POLIZAS`, `MVTO_CUENTAS`), inconsistencias cuantitativas o estéticas cliché con emojis se filtren a la interfaz del cliente final.
+
+#### El Checklist de Calidad Bancaria de 5 Puntos
+Cada borrador redactado pasa obligatoriamente por una inspección automatizada:
+1. **Check 1: Vocabulario Comercial Limpio (Zero Jargon):** Garantiza que ninguna tabla de base de datos (`MAESTRO_METAS`, `MAESTRO_POLIZAS`, `MAESTRO_CUENTAS`, `MVTO_CUENTAS`, `MAESTRO_CREDITOS`) se exponga al cliente, traduciéndolas a términos oficiales de Banco Guayaquil (*"Metas de Ahorro en tu App Banco Guayaquil"*, *"Póliza a Plazo Fijo"*, *"tus movimientos de cuenta"*).
+2. **Check 2: Alineación Estricta con la Intención:** Verifica que si la consulta no era sobre nueva deuda (diagnóstico, herencia, seguro, score), no se simulen créditos ficticios ni se hable de *"cuota de $0.00 encaja holgadamente"*.
+3. **Check 3: Consistencia Cuantitativa Actuarial:** Verifica que las cifras citadas en el texto coincidan con los cálculos matemáticos del motor LightGBM (flujo libre, cuota, probabilidad de mora y semáforo).
+4. **Check 4: Alternativa Constructiva Obligatoria en Semáforo ROJO:** En caso de no viabilidad, garantiza que siempre se ofrezca una alternativa viable (Meta de Ahorro o Soluciones de Pago) y nunca una negativa estéril.
+5. **Check 5: Tono Profesional Sobrio, Cero Emojis y Concisión:** Aplica la directriz corporativa anti-IA slop (cero emojis Unicode) y longitud controlada (< 95 palabras).
+
+#### Reflection Loop y Sanitización de Defensa en Profundidad
+- Si el borrador falla algún criterio y Azure AI Foundry está conectado, el Supervisor activa un **Reflection Loop** que instruye al modelo a reescribir corrigiendo las infracciones detectadas.
+- Como salvaguarda inviolable, aplica un **motor de sanitización determinista por expresiones regulares** que garantiza la sustitución de cualquier término técnico antes de devolver la respuesta.
+- Registra el objeto de trazabilidad `auditoria_supervisor` en la respuesta JSON para auditoría de cumplimiento y observabilidad.
 
 ---
 
@@ -582,3 +613,4 @@ python probar_seguridad_guardrails.py
 ```
 
 Todas las suites de prueba reportan **100% de éxito en consola** y confirman la robustez del sistema para entornos productivos.
+
