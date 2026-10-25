@@ -198,6 +198,15 @@ configuró Terraform. El destino debe existir antes del despliegue.
 | Registro / repositorio | `cchackiatonbg.azurecr.io/ia-credit-bg` |
 | Service connection | `sc-azure-credit-bg-dev` |
 | Azure DevOps Environment | `credit-bg-dev` |
+| Agent pool | `GitHub-hosted Agents` |
+| Imagen del agente (todos los stages) | `ubuntu-24.04-8-core` |
+
+Los stages `Validate`, `BuildAndPush` y `DeployContainerApp` heredan el pool
+`GitHub-hosted Agents` con la imagen Linux `ubuntu-24.04-8-core`. Azure DevOps
+asigna una máquina hospedada a cada job. Esta configuración permite ejecutar
+Bash, construir la imagen Docker Linux y comprobar el despliegue. El catálogo de
+imágenes está en la [documentación de agentes hospedados en GitHub para Azure
+Pipelines](https://learn.microsoft.com/en-us/azure/devops/pipelines/agents/github-hosted).
 
 El nombre de la app y el del contenedor se configuran con `containerAppName` y
 `containerAppContainerName` en el YAML. El build publica una etiqueta por Build ID

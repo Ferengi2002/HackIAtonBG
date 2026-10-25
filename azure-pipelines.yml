@@ -24,17 +24,9 @@ pr:
       - main
       - develop
 
-parameters:
-  - name: agentName
-    displayName: 'Agente (auto = disponible en TEAM2)'
-    type: string
-    default: 'auto'
-
 pool:
-  name: TEAM2
-  ${{ if and(ne(trim(parameters.agentName), ''), ne(trim(parameters.agentName), 'auto')) }}:
-    demands:
-      - Agent.Name -equals ${{ trim(parameters.agentName) }}
+  name: 'GitHub-hosted Agents'
+  vmImage: 'ubuntu-24.04-8-core'
 
 variables:
   azureServiceConnection: 'sc-azure-credit-bg-dev'
