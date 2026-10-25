@@ -176,77 +176,72 @@ Para habilitar Azure, agrega `--env-file .env` antes del nombre de la imagen en
 `.env` y otros secretos quedan excluidos del contexto de construcción.
 El pipeline utiliza este `Dockerfile` desde la raíz para construir y publicar en ACR.
 
-### Despliegue en Azure Container Apps desde el pipeline
+### Despliegue en la Container App existente de Terraform
 
-`azure-pipelines.yml` ejecuta `Validate -> BuildAndPush -> CreateContainerApp`.
-Las validaciones de Bash, JSON, Bicep y las pruebas Python se ejecutan en Azure
-Pipelines. El último stage se ejecuta únicamente desde `main`, después de publicar
-la imagen, y nunca en un pull request ni desde `develop`.
+`azure-pipelines.yml` ejecuta `Validate -> BuildAndPush -> DeployContainerApp`.
+El último stage se ejecuta desde `main`, después de publicar la imagen de esa
+misma ejecución, y nunca desde un pull request ni desde `develop`.
 
-El despliegue usa el digest `sha256` de la imagen de esa misma ejecución, descarga
-el manifiesto compilado por `Validate` y crea o actualiza los recursos con Bicep
-en modo incremental. Antes de aplicar ejecuta ARM Validate y What-If. El grupo
-existente `rg-hackaton-grupo02`, ACR y la infraestructura Java de Terraform se
-conservan; Bicep administra los recursos adicionales de esta API.
+Terraform, en el repositorio `iac-credit-bg`, administra la infraestructura. Este
+pipeline ejecuta `az containerapp update` para cambiar únicamente la imagen del
+contenedor indicado y el sufijo de la nueva revisión. Reutiliza el entorno, la
+identidad, el ingress, las variables, los secretos, las sondas y el escalado que
+configuró Terraform. El destino debe existir antes del despliegue.
 
-| Recurso/configuración | Valor inicial de dev |
+| Configuración | Valor de dev |
 | --- | --- |
+| Grupo de recursos | `rg-hackaton-grupo02` |
 | Container App | `ca-ia-credit-bg-dev` |
-| Entorno de Container Apps | `cae-credit-bg-dev` |
-| Identidad administrada | `id-ia-credit-bg-dev` |
-| Log Analytics | `law-ia-credit-bg-dev`, retención de 30 días |
-| Región | `eastus2` |
-| Acceso | Público, HTTPS, sin autenticación |
-| Contenedor | Puerto `8000`, 1 vCPU y 2 GiB de memoria |
-| Escalado Consumption | Entre 1 y 3 réplicas, concurrencia HTTP de 20 |
+| Contenedor dentro de la app | `ia-credit-bg` |
+| Entorno existente | `cae-credit-bg-dev` |
+| Identidad de descarga | `id-credit-bg-dev` |
+| Registro / repositorio | `cchackiatonbg.azurecr.io/ia-credit-bg` |
+| Service connection | `sc-azure-credit-bg-dev` |
 | Azure DevOps Environment | `credit-bg-dev` |
 
-Los nombres, la región y el escalado se configuran en `deploy/parameters/dev.json`.
-El grupo de recursos y el Environment de Azure DevOps se configuran en las
-variables `containerAppResourceGroup` y `containerAppDeploymentEnvironment` del
-pipeline. La API y Swagger quedan disponibles sin token, según la configuración
-solicitada; el acceso privado a ACR usa la identidad administrada con `AcrPull`.
+El nombre de la app y el del contenedor se configuran con `containerAppName` y
+`containerAppContainerName` en el YAML. El build publica una etiqueta por Build ID
+y obtiene su digest `sha256`; el despliegue utiliza ese digest inmutable. El
+artefacto `container-app-release` conserva el script validado de la ejecución.
 
-Antes de la primera ejecución, preparar estos permisos y recursos en Azure:
+Permisos requeridos, preparados fuera del pipeline:
 
-- Autorizar `sc-azure-credit-bg-dev` y el Environment `credit-bg-dev` para este
-  pipeline. Configurar un check **Exclusive lock** en el Environment para que
-  `lockBehavior: runLatest` evite despliegues concurrentes de la misma aplicación.
-- Conceder a la identidad de la service connection `Contributor` en el grupo de
-  destino, `AcrPush` en el ACR existente y permiso para crear asignaciones RBAC en
-  el ACR, por ejemplo `Role Based Access Control Administrator` limitado a ese
-  registro. `AcrPush` por sí solo no permite crear recursos ni asignar `AcrPull`.
-- Registrar los proveedores `Microsoft.App`, `Microsoft.OperationalInsights`,
-  `Microsoft.Insights` y `Microsoft.ManagedIdentity` en la suscripción. ACR debe
-  usar **RBAC Registry Permissions** y permitir ARM audience tokens. El pipeline
-  comprueba estas condiciones del registro sin cambiar sus políticas.
+- La identidad de `sc-azure-credit-bg-dev` necesita `Contributor` en el grupo de
+  destino y `AcrPush` en el registro para publicar imágenes.
+- La identidad que Terraform configuró en `registry`, actualmente
+  `id-credit-bg-dev`, necesita `AcrPull` en `cchackiatonbg` para descargar imágenes.
+  El script obtiene esa identidad de la app; no usa `id-ia-credit-bg-dev`.
+- Autorizar la service connection y el Environment para este pipeline. Configurar
+  un check **Exclusive lock** en `credit-bg-dev` para coordinar las publicaciones
+  y los despliegues Terraform que usen ese Environment.
 
-Por defecto `keyVaultName` está vacío y la aplicación usa su fallback local para
-Foundry. Para habilitar las llamadas reales, configurar en `dev.json` un Key Vault
-existente con RBAC, su grupo y `openAiKeySecretName`; el secreto debe contener la
-clave de Foundry. El módulo concede a la identidad de la API `Key Vault Secrets
-User` en ese vault y utiliza una referencia al secreto, sin copiar su valor al
-YAML ni a los artefactos. La service connection también necesita permiso para
-crear esa asignación RBAC y leer los metadatos del vault. La aplicación reutiliza
-esa clave para Document Intelligence; revisar el endpoint y el deployment de
-Foundry en el mismo archivo de parámetros.
+No se necesita `Microsoft.Authorization/roleAssignments/write` en la conexión del
+pipeline. Las plantillas Bicep de creación se retiraron de este repositorio para
+que Terraform conserve la administración de la infraestructura. En Terraform,
+`lifecycle.ignore_changes` conserva la imagen y el sufijo de revisión publicados
+por el pipeline, mientras los demás cambios siguen bajo su administración.
 
-Azure cambia el tráfico a la nueva revisión cuando supera las probes Startup,
-Readiness y Liveness de `/healthz`. El stage verifica la revisión y el digest,
-consulta `/healthz` y `/openapi.json` sin autenticación, y publica la URL en el
-resumen de la ejecución. El artefacto `container-app-deployment-<intento>` conserva
-el What-If, los outputs, la revisión y los resultados de esas comprobaciones.
+Antes de actualizar, el script comprueba que la app y el contenedor existan, que
+el ACR permita tokens ARM y use RBAC clásico, y que su identidad tenga `AcrPull`.
+También comprueba el modo de revisión `Single`, ingress HTTPS público en 8000 y
+tráfico a la última revisión. Espera la revisión lista, verifica el digest en el
+contenedor por su nombre y consulta `/healthz` y `/openapi.json`.
 
-El script muestra el inicio, fin y duración de cada fase; durante operaciones
-largas emite un mensaje cada 30 segundos. Reutiliza la extensión `containerapp`
-del agente y solo la instala si falta. El envío del despliegue usa `--no-wait`,
-seguido de consultas del estado ARM y del estado de sus recursos. Las operaciones
-y los errores también se guardan en `operations.json` y `deployment-state.json`.
-ARM Validate y What-If tienen un límite de 5 minutos cada uno, y la espera del
-despliegue es de 30 minutos, configurable con `containerAppArmTimeoutSeconds`.
-La tarea de despliegue tiene un máximo de 55 minutos y deja margen dentro del job
-para publicar evidencias. Si vence la espera del agente, la operación de Azure
-puede seguir ejecutándose; revisar su estado antes de iniciar otro despliegue.
+Para habilitar Foundry o Document Intelligence, configurar las variables y
+referencias de Key Vault desde Terraform: `container_app_environment_variables`
+y `container_app_key_vault_secrets`. El pipeline conserva esa configuración.
+
+El artefacto `container-app-deployment-<intento>` incluye `before.json`,
+`status.json`, `revision.json`, los resultados HTTP y la URL del servicio. Los
+metadatos guardados omiten valores de variables y secretos. El tiempo de espera
+se configura con `containerAppUpdateTimeoutSeconds`, inicialmente 1200 segundos.
+Si el agente agota su espera, comprobar la revisión antes de repetir el despliegue.
+
+Publicar el YAML y el script corregidos y ejecutar una nueva versión desde `main`.
+Un reintento de una ejecución antigua conserva el artefacto anterior de creación.
+
+Referencias: [actualizar Container Apps con Azure CLI](https://learn.microsoft.com/en-us/cli/azure/containerapp#az-containerapp-update)
+y [lifecycle de Terraform](https://developer.hashicorp.com/terraform/language/meta-arguments/lifecycle#ignore_changes).
 
 ### 5. Documentación Interactiva Swagger UI
 Abre en tu navegador:

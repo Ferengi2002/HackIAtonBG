@@ -1,9 +1,11 @@
-# CI/CD: validar, publicar imagen y crear/actualizar la API publica en Container Apps.
+# CI/CD: validar, publicar imagen y actualizar la Container App existente de Terraform.
 # Requisitos:
 #   - Dockerfile en la raíz del repo (o ajustar dockerfilePath / buildContext)
 #   - Service connection (Azure Resource Manager): sc-azure-credit-bg-dev
 #   - Permiso del service principal sobre el ACR: rol AcrPush
-#   - Contributor en el grupo de destino y permisos RBAC para asignar AcrPull en ACR
+#   - Contributor en el grupo de destino
+#   - Container App ca-ia-credit-bg-dev creada por Terraform
+#   - Su identidad id-credit-bg-dev con AcrPull en ACR (ver README)
 #   - Environment de Azure DevOps: credit-bg-dev (ver README)
 
 trigger:
@@ -36,7 +38,9 @@ variables:
   pythonVersion: '3.11'
   containerAppResourceGroup: 'rg-hackaton-grupo02'
   containerAppDeploymentEnvironment: 'credit-bg-dev'
-  containerAppArmTimeoutSeconds: '1800'
+  containerAppName: 'ca-ia-credit-bg-dev'
+  containerAppContainerName: 'ia-credit-bg'
+  containerAppUpdateTimeoutSeconds: '1200'
 
 stages:
   # ---------------------------------------------------------------
@@ -81,21 +85,15 @@ stages:
           - bash: |
               set -euo pipefail
               bash -n scripts/deploy-container-app.sh
-              python -m json.tool deploy/parameters/dev.json > /dev/null
-              az bicep install
-              mkdir -p "$(Build.ArtifactStagingDirectory)/container-app-template"
-              az bicep build \
-                --file deploy/container-app.bicep \
-                --outfile "$(Build.ArtifactStagingDirectory)/container-app-template/template.json"
-              cp deploy/parameters/dev.json "$(Build.ArtifactStagingDirectory)/container-app-template/dev.parameters.json"
-              cp scripts/deploy-container-app.sh "$(Build.ArtifactStagingDirectory)/container-app-template/deploy.sh"
-            displayName: Validar y compilar despliegue de Container Apps
+              mkdir -p "$(Build.ArtifactStagingDirectory)/container-app-release"
+              cp scripts/deploy-container-app.sh "$(Build.ArtifactStagingDirectory)/container-app-release/deploy.sh"
+            displayName: Validar despliegue sobre Container App existente
 
           - task: PublishPipelineArtifact@1
-            displayName: Publicar manifiesto validado de Container Apps
+            displayName: Publicar script validado de despliegue
             inputs:
-              targetPath: '$(Build.ArtifactStagingDirectory)/container-app-template'
-              artifact: container-app-template
+              targetPath: '$(Build.ArtifactStagingDirectory)/container-app-release'
+              artifact: container-app-release
 
   # ---------------------------------------------------------------
   # 2. Build de la imagen y push al ACR (no se ejecuta en PR)
@@ -141,10 +139,10 @@ stages:
                 echo "Imagen publicada: $IMAGE@$DIGEST"
 
   # ---------------------------------------------------------------
-  # 3. Crear/actualizar Container Apps: solo main y con la imagen de esta ejecucion
+  # 3. Actualizar Container App existente: solo main y con la imagen de esta ejecucion
   # ---------------------------------------------------------------
-  - stage: CreateContainerApp
-    displayName: Crear y desplegar Container App (dev)
+  - stage: DeployContainerApp
+    displayName: Desplegar en Container App existente (dev)
     dependsOn: BuildAndPush
     condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'), ne(variables['Build.Reason'], 'PullRequest'))
     lockBehavior: runLatest
@@ -163,38 +161,37 @@ stages:
                 - download: none
 
                 - task: DownloadPipelineArtifact@2
-                  displayName: Descargar manifiesto validado de esta ejecucion
+                  displayName: Descargar script validado de esta ejecucion
                   inputs:
                     buildType: current
-                    artifactName: container-app-template
-                    targetPath: '$(Pipeline.Workspace)/container-app-template'
+                    artifactName: container-app-release
+                    targetPath: '$(Pipeline.Workspace)/container-app-release'
 
                 - bash: mkdir -p "$(Pipeline.Workspace)/container-app-deployment"
                   displayName: Preparar evidencias del despliegue
 
                 - task: AzureCLI@2
                   name: deployApi
-                  displayName: Validar, crear y comprobar Container App
+                  displayName: Actualizar imagen y comprobar Container App existente
                   timeoutInMinutes: 55
                   inputs:
                     azureSubscription: '$(azureServiceConnection)'
                     visibleAzLogin: false
                     scriptType: bash
                     scriptLocation: scriptPath
-                    scriptPath: '$(Pipeline.Workspace)/container-app-template/deploy.sh'
-                    workingDirectory: '$(Pipeline.Workspace)/container-app-template'
+                    scriptPath: '$(Pipeline.Workspace)/container-app-release/deploy.sh'
+                    workingDirectory: '$(Pipeline.Workspace)/container-app-release'
                   env:
                     AZURE_CORE_ONLY_SHOW_ERRORS: 'true'
                     RESOURCE_GROUP: $(containerAppResourceGroup)
+                    CONTAINER_APP_NAME: $(containerAppName)
+                    CONTAINER_NAME: $(containerAppContainerName)
                     ACR_NAME: $(acrName)
                     IMAGE_REPOSITORY: $(imageRepository)
                     CONTAINER_IMAGE: $(containerImage)
                     REVISION_SUFFIX: b$(Build.BuildId)-a$(System.JobAttempt)
-                    DEPLOYMENT_NAME: ia-credit-bg-$(Build.BuildId)-$(System.JobAttempt)
-                    TEMPLATE_FILE: '$(Pipeline.Workspace)/container-app-template/template.json'
-                    PARAMETERS_FILE: '$(Pipeline.Workspace)/container-app-template/dev.parameters.json'
                     DEPLOY_REPORT_DIR: '$(Pipeline.Workspace)/container-app-deployment'
-                    DEPLOYMENT_TIMEOUT_SECONDS: $(containerAppArmTimeoutSeconds)
+                    DEPLOYMENT_TIMEOUT_SECONDS: $(containerAppUpdateTimeoutSeconds)
 
                 - task: PublishPipelineArtifact@1
                   displayName: Publicar evidencias y URL de Container App

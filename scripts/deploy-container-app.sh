@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Separar progreso de stdout para no mezclar mensajes con JSON o valores capturados.
+# El pipeline publica una revision; Terraform administra la infraestructura.
 exec 3>&1
 log() {
   printf '[%s] %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*" >&3
 }
 
-# Mantener visible una operacion larga sin imprimir comandos ni credenciales.
 run_step() {
   local label="$1" limit="$2"
   shift 2
@@ -27,48 +26,58 @@ run_step() {
   else
     status=$?
     log "ERROR: $label, codigo $status ($((SECONDS - started))s)"
-    if [[ "$status" == 124 || "$status" == 137 ]]; then
-      log "Se alcanzo el limite de espera de ${limit}s."
-    fi
     return "$status"
   fi
 }
 
 : "${RESOURCE_GROUP:?Falta RESOURCE_GROUP}"
+: "${CONTAINER_APP_NAME:?Falta CONTAINER_APP_NAME}"
+: "${CONTAINER_NAME:?Falta CONTAINER_NAME}"
 : "${ACR_NAME:?Falta ACR_NAME}"
 : "${IMAGE_REPOSITORY:?Falta IMAGE_REPOSITORY}"
 : "${CONTAINER_IMAGE:?Falta la imagen de BuildAndPush}"
 : "${REVISION_SUFFIX:?Falta REVISION_SUFFIX}"
-: "${DEPLOYMENT_NAME:?Falta DEPLOYMENT_NAME}"
-: "${TEMPLATE_FILE:?Falta TEMPLATE_FILE}"
-: "${PARAMETERS_FILE:?Falta PARAMETERS_FILE}"
 : "${DEPLOY_REPORT_DIR:?Falta DEPLOY_REPORT_DIR}"
-DEPLOYMENT_TIMEOUT_SECONDS="${DEPLOYMENT_TIMEOUT_SECONDS:-1800}"
+DEPLOYMENT_TIMEOUT_SECONDS="${DEPLOYMENT_TIMEOUT_SECONDS:-1200}"
 if [[ ! "$DEPLOYMENT_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
   log 'DEPLOYMENT_TIMEOUT_SECONDS debe ser un entero positivo.'
   exit 1
 fi
-
-mkdir -p "$DEPLOY_REPORT_DIR"
-log "Inicio del despliegue $DEPLOYMENT_NAME en $RESOURCE_GROUP."
-export AZURE_EXTENSION_USE_DYNAMIC_INSTALL=no
-log 'Comprobar extension containerapp instalada.'
-if extension_version=$(timeout --kill-after=15s 60s az extension show \
-  --name containerapp --query version --output tsv 2>/dev/null); then
-  log "Reutilizar containerapp $extension_version; no se fuerza una actualizacion."
-else
-  run_step 'Instalar extension containerapp' 180 \
-    az extension add --name containerapp --yes --only-show-errors
+if [[ ! "$REVISION_SUFFIX" =~ ^[a-z][a-z0-9-]{0,63}$ || "$REVISION_SUFFIX" == *--* || "$REVISION_SUFFIX" == *- ]]; then
+  log 'REVISION_SUFFIX debe ser un sufijo valido de Container Apps.'
+  exit 1
 fi
 
-# Solo se consume el registro existente; el grupo esta administrado por Terraform.
-run_step 'Comprobar grupo de recursos' 90 az group show --name "$RESOURCE_GROUP" --output none
-registry_json=$(run_step 'Consultar ACR' 90 az acr show --name "$ACR_NAME" --output json)
-registry_group=$(jq -r '.resourceGroup' <<< "$registry_json")
-registry_server=$(jq -r '.loginServer' <<< "$registry_json")
+mkdir -p "$DEPLOY_REPORT_DIR"
+export AZURE_EXTENSION_USE_DYNAMIC_INSTALL=no
+if ! timeout --kill-after=15s 60s az extension show --name containerapp --output none 2>/dev/null; then
+  run_step 'Instalar extension containerapp' 180 az extension add --name containerapp --yes --only-show-errors
+fi
+
+# Proyectar solo metadatos; las evidencias nunca incluyen valores de env o secretos.
+app_json=$(run_step 'Consultar Container App existente de Terraform' 90 \
+  az containerapp show --name "$CONTAINER_APP_NAME" --resource-group "$RESOURCE_GROUP" \
+  --query '{id:id,name:name,identity:identity,environmentId:properties.environmentId,state:properties.provisioningState,latestRevision:properties.latestRevisionName,latestReadyRevision:properties.latestReadyRevisionName,mode:properties.configuration.activeRevisionsMode,registries:properties.configuration.registries,ingress:properties.configuration.ingress,containers:properties.template.containers[].{name:name,image:image}}' \
+  --output json)
+printf '%s\n' "$app_json" > "$DEPLOY_REPORT_DIR/before.json"
+if ! jq -e --arg container "$CONTAINER_NAME" \
+  '([.containers[] | select(.name == $container)] | length) == 1' <<< "$app_json" > /dev/null; then
+  log "El contenedor $CONTAINER_NAME debe existir dentro de $CONTAINER_APP_NAME."
+  exit 1
+fi
+if ! jq -e '.mode == "Single" and .ingress.external == true and .ingress.allowInsecure == false and .ingress.targetPort == 8000 and (.ingress.fqdn | type == "string" and length > 0) and any(.ingress.traffic[]?; .latestRevision == true and .weight == 100)' \
+  <<< "$app_json" > /dev/null; then
+  log 'Terraform debe configurar revision Single, ingress HTTPS publico en 8000 y trafico a la ultima revision.'
+  exit 1
+fi
+
+registry_json=$(run_step 'Consultar ACR existente' 90 az acr show --name "$ACR_NAME" \
+  --query '{id:id,loginServer:loginServer,roleAssignmentMode:roleAssignmentMode}' --output json)
+registry_id=$(jq -er '.id' <<< "$registry_json")
+registry_server=$(jq -er '.loginServer' <<< "$registry_json")
 permission_mode=$(jq -r '.roleAssignmentMode // "LegacyRegistryPermissions"' <<< "$registry_json")
 if [[ "$permission_mode" != 'LegacyRegistryPermissions' ]]; then
-  log 'Este despliegue requiere ACR en modo RBAC Registry Permissions para usar AcrPull.'
+  log 'Se requiere ACR en modo RBAC Registry Permissions para usar AcrPull.'
   exit 1
 fi
 image_prefix="$registry_server/$IMAGE_REPOSITORY@"
@@ -84,138 +93,74 @@ if [[ "${arm_auth,,}" != 'enabled' ]]; then
   exit 1
 fi
 
-min_replicas=$(jq -r '.parameters.minReplicas.value' "$PARAMETERS_FILE")
-max_replicas=$(jq -r '.parameters.maxReplicas.value' "$PARAMETERS_FILE")
-if (( min_replicas < 1 || max_replicas < min_replicas )); then
-  log 'Configurar 1 <= minReplicas <= maxReplicas.'
+# Reutilizar la identidad configurada en registry por Terraform.
+pull_identity=$(jq -er --arg server "$registry_server" \
+  '[.registries[]? | select((.server | ascii_downcase) == ($server | ascii_downcase))] | if length == 1 then .[0].identity else empty end' <<< "$app_json")
+if [[ "$pull_identity" == system ]]; then
+  principal_id=$(jq -er '.identity.principalId' <<< "$app_json")
+else
+  principal_id=$(jq -er --arg identity "$pull_identity" \
+    '.identity.userAssignedIdentities | to_entries[] | select((.key | ascii_downcase) == ($identity | ascii_downcase)) | .value.principalId' <<< "$app_json")
+fi
+assignments=$(run_step 'Comprobar AcrPull de la identidad de Terraform' 90 \
+  az role assignment list --assignee "$principal_id" --fill-principal-name false \
+  --scope "$registry_id" --include-inherited --output json)
+if ! jq -e 'any(.[]; ((.roleDefinitionId // "") | ascii_downcase | endswith("/7f951dda-4ed3-4680-a7ca-43fe172d538d")))' \
+  <<< "$assignments" > /dev/null; then
+  printf '##vso[task.logissue type=error]Falta AcrPull para la identidad %s en %s.\n' "$principal_id" "$registry_id" >&2
   exit 1
 fi
 
-parameters=(
-  "@$PARAMETERS_FILE"
-  "registryName=$ACR_NAME"
-  "registryResourceGroupName=$registry_group"
-  "containerImage=$CONTAINER_IMAGE"
-  "revisionSuffix=$REVISION_SUFFIX"
-)
+revision="$CONTAINER_APP_NAME--$REVISION_SUFFIX"
+if jq -e --arg revision "$revision" --arg container "$CONTAINER_NAME" --arg image "$CONTAINER_IMAGE" \
+  '.latestRevision == $revision and any(.containers[]; .name == $container and .image == $image)' \
+  <<< "$app_json" > /dev/null; then
+  log "Continuar comprobacion de la revision ya enviada: $revision."
+else
+  run_step 'Publicar imagen en la Container App existente' 120 \
+    az containerapp update --name "$CONTAINER_APP_NAME" --resource-group "$RESOURCE_GROUP" \
+    --container-name "$CONTAINER_NAME" --image "$CONTAINER_IMAGE" \
+    --revision-suffix "$REVISION_SUFFIX" --no-wait --output none
+fi
 
-run_step 'ARM Validate' 300 az deployment group validate \
-  --resource-group "$RESOURCE_GROUP" \
-  --template-file "$TEMPLATE_FILE" \
-  --parameters "${parameters[@]}" \
-  --output none
-
-run_step 'ARM What-If' 300 az deployment group what-if \
-  --resource-group "$RESOURCE_GROUP" \
-  --template-file "$TEMPLATE_FILE" \
-  --parameters "${parameters[@]}" \
-  --no-pretty-print \
-  --result-format FullResourcePayloads \
-  --output json > "$DEPLOY_REPORT_DIR/what-if.json"
-
-save_operations() {
-  if timeout --kill-after=10s 30s az deployment operation group list \
-    --name "$DEPLOYMENT_NAME" --resource-group "$RESOURCE_GROUP" \
-    --output json > "$DEPLOY_REPORT_DIR/operations.tmp.json"; then
-    mv "$DEPLOY_REPORT_DIR/operations.tmp.json" "$DEPLOY_REPORT_DIR/operations.json"
-    jq -r '.[] | select(.properties.targetResource != null) |
-      "  Recurso: \(.properties.targetResource.resourceName) | Estado: \(.properties.provisioningState)"' \
-      "$DEPLOY_REPORT_DIR/operations.json" >&3
-    jq -c '.[] | select(.properties.provisioningState == "Failed") |
-      {resource: .properties.targetResource.resourceName, error: .properties.statusMessage}' \
-      "$DEPLOY_REPORT_DIR/operations.json" >&2
-  else
-    log 'No se pudo obtener el detalle de operaciones ARM en esta consulta.'
-  fi
-}
-
-# Enviar sin una espera opaca del SDK; consultar el estado y los recursos explicitamente.
-run_step 'Enviar despliegue ARM' 120 az deployment group create \
-  --name "$DEPLOYMENT_NAME" \
-  --resource-group "$RESOURCE_GROUP" \
-  --template-file "$TEMPLATE_FILE" \
-  --parameters "${parameters[@]}" \
-  --mode Incremental \
-  --no-wait --output none
-
-deployment_started=$SECONDS
+ready=false
 deployment_deadline=$((SECONDS + DEPLOYMENT_TIMEOUT_SECONDS))
-next_operations=$SECONDS
-deployment_state='Running'
 while (( SECONDS < deployment_deadline )); do
-  log "Consultar despliegue ARM ($((SECONDS - deployment_started))s transcurridos)."
-  if timeout --kill-after=10s 60s az deployment group show \
-    --name "$DEPLOYMENT_NAME" --resource-group "$RESOURCE_GROUP" \
-    --query '{state:properties.provisioningState,error:properties.error,outputs:properties.outputs}' \
-    --output json > "$DEPLOY_REPORT_DIR/deployment-state.tmp.json"; then
-    mv "$DEPLOY_REPORT_DIR/deployment-state.tmp.json" "$DEPLOY_REPORT_DIR/deployment-state.json"
-  else
-    log 'No se pudo consultar el estado ARM dentro de 60s; Azure puede seguir ejecutando el despliegue.'
-    save_operations
+  status_json=$(run_step 'Consultar estado de la nueva revision' 90 \
+    az containerapp show --name "$CONTAINER_APP_NAME" --resource-group "$RESOURCE_GROUP" \
+    --query '{state:properties.provisioningState,latestRevision:properties.latestRevisionName,latestReadyRevision:properties.latestReadyRevisionName}' \
+    --output json)
+  printf '%s\n' "$status_json" > "$DEPLOY_REPORT_DIR/status.json"
+  state=$(jq -er '.state' <<< "$status_json")
+  log "Estado: $state | Revision lista: $(jq -r '.latestReadyRevision // "ninguna"' <<< "$status_json")."
+  if [[ "$state" == Failed || "$state" == Canceled ]]; then
+    log 'Azure no pudo publicar la nueva revision; revisar status.json y las revisiones de la app.'
     exit 1
   fi
-  deployment_state=$(jq -er '.state' "$DEPLOY_REPORT_DIR/deployment-state.json")
-  log "Estado ARM: $deployment_state ($((SECONDS - deployment_started))s / ${DEPLOYMENT_TIMEOUT_SECONDS}s)."
-  case "$deployment_state" in
-    Succeeded)
-      jq '.outputs' "$DEPLOY_REPORT_DIR/deployment-state.json" > "$DEPLOY_REPORT_DIR/outputs.json"
-      break
-      ;;
-    Failed|Canceled)
-      save_operations
-      jq '.error' "$DEPLOY_REPORT_DIR/deployment-state.json" >&2
-      log "El despliegue ARM termino en $deployment_state."
-      exit 1
-      ;;
-  esac
-  if (( SECONDS >= next_operations )); then
-    save_operations
-    next_operations=$((SECONDS + 60))
-  fi
-  sleep 20
-done
-if [[ "$deployment_state" != 'Succeeded' ]]; then
-  save_operations
-  log "Se agoto la espera de ${DEPLOYMENT_TIMEOUT_SECONDS}s para $DEPLOYMENT_NAME."
-  log 'La operacion de Azure puede continuar; revisar sus operaciones antes de reintentar.'
-  exit 1
-fi
-save_operations
-
-app_name=$(jq -er '.appName.value' "$DEPLOY_REPORT_DIR/outputs.json")
-app_url=$(jq -er '.appUrl.value' "$DEPLOY_REPORT_DIR/outputs.json")
-revision=$(jq -er '.revisionName.value' "$DEPLOY_REPORT_DIR/outputs.json")
-
-# En modo Single, Azure conserva el trafico en la revision sana hasta que la nueva este lista.
-log "Esperar revision Ready: $revision (limite 600s)."
-ready=false
-ready_deadline=$((SECONDS + 600))
-while (( SECONDS < ready_deadline )); do
-  ready_revision=$(timeout --kill-after=10s 60s az containerapp show \
-    --name "$app_name" --resource-group "$RESOURCE_GROUP" \
-    --query properties.latestReadyRevisionName --output tsv)
-  if [[ "$ready_revision" == "$revision" ]]; then
+  if jq -e --arg revision "$revision" '.state == "Succeeded" and .latestReadyRevision == $revision' \
+    <<< "$status_json" > /dev/null; then
     ready=true
     break
   fi
-  log "Revision lista actual: ${ready_revision:-ninguna}; esperando $revision."
   sleep 15
 done
+if [[ "$ready" != true ]]; then
+  log "Se agoto la espera de ${DEPLOYMENT_TIMEOUT_SECONDS}s; revisar la app antes de reintentar."
+  exit 1
+fi
 
 run_step 'Consultar revision desplegada' 90 az containerapp revision show \
-  --name "$app_name" --resource-group "$RESOURCE_GROUP" --revision "$revision" \
+  --name "$CONTAINER_APP_NAME" --resource-group "$RESOURCE_GROUP" --revision "$revision" \
+  --query '{name:name,active:properties.active,healthState:properties.healthState,provisioningState:properties.provisioningState,runningState:properties.runningState,containers:properties.template.containers[].{name:name,image:image}}' \
   --output json > "$DEPLOY_REPORT_DIR/revision.json"
-if [[ "$ready" != true ]]; then
-  log 'La nueva revision no alcanzo el estado Ready dentro de 600s.'
-  exit 1
-fi
-deployed_image=$(jq -er '.properties.template.containers[0].image' "$DEPLOY_REPORT_DIR/revision.json")
-if [[ "$deployed_image" != "$CONTAINER_IMAGE" ]]; then
-  log 'La revision activa no corresponde a la imagen de esta ejecucion.'
+if ! jq -e --arg container "$CONTAINER_NAME" --arg image "$CONTAINER_IMAGE" \
+  'any(.containers[]; .name == $container and .image == $image)' \
+  "$DEPLOY_REPORT_DIR/revision.json" > /dev/null; then
+  log 'La revision lista no corresponde al digest de esta ejecucion.'
   exit 1
 fi
 
-# Estas comprobaciones se ejecutan en el agente del pipeline, sobre el servicio desplegado.
+app_url="https://$(jq -er '.ingress.fqdn' <<< "$app_json")"
 run_step 'Comprobar /healthz publico' 200 \
   curl --fail --silent --show-error --retry 12 --retry-all-errors \
   --retry-delay 5 --retry-max-time 180 --max-time 15 "$app_url/healthz" > "$DEPLOY_REPORT_DIR/health.json"
@@ -227,7 +172,7 @@ jq -e '.paths["/api/v1/copiloto/evaluar"].post' "$DEPLOY_REPORT_DIR/openapi.json
 
 printf '##vso[task.setvariable variable=containerAppUrl;isOutput=true]%s\n' "$app_url"
 printf '##vso[task.setvariable variable=containerAppRevision;isOutput=true]%s\n' "$revision"
-log "Container App disponible: $app_url | Revision: $revision | Imagen: $CONTAINER_IMAGE"
-printf '# Container App desplegada\n\n- API publica sin autenticacion: %s\n- Swagger: %s/docs\n- Revision: `%s`\n- Imagen: `%s`\n' \
-  "$app_url" "$app_url" "$revision" "$CONTAINER_IMAGE" > "$DEPLOY_REPORT_DIR/summary.md"
+printf '# API desplegada en Container App existente\n\n- API: %s\n- Swagger: %s/docs\n- Contenedor: `%s`\n- Revision: `%s`\n- Imagen: `%s`\n' \
+  "$app_url" "$app_url" "$CONTAINER_NAME" "$revision" "$CONTAINER_IMAGE" > "$DEPLOY_REPORT_DIR/summary.md"
 printf '##vso[task.uploadsummary]%s\n' "$DEPLOY_REPORT_DIR/summary.md"
+log "Despliegue comprobado: $app_url | Revision: $revision | Imagen: $CONTAINER_IMAGE"
