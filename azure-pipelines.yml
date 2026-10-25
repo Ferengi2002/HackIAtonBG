@@ -25,7 +25,8 @@ pr:
       - develop
 
 pool:
-  vmImage: ubuntu-latest
+  name: 'GitHub-hosted Agents'
+  vmImage: 'ubuntu-24.04-8-core'
 
 variables:
   azureServiceConnection: 'sc-azure-credit-bg-dev'
